@@ -143,6 +143,39 @@ def write_rule(rule: Rule, root: Path | None = None) -> Path:
     return target
 
 
+def format_rules_for_prompt(rules: list[Rule]) -> str:
+    """Render a list of rules as a numbered Markdown list for prompt injection.
+
+    Used by the translation prompt, the deviation auditor, and the LLM
+    judge so all three see the same rule text — the single source of
+    truth lives in ``rules/active/*.md`` and only this helper knows how
+    to format them.
+
+    Each rule renders as a numbered block: imperative text on the first
+    line with optional scope tags, and any ``body_extra`` (typically
+    ``## Examples`` sections from the vault note) indented underneath.
+    Empty rule list yields an explicit "no rules yet" line so consumers
+    can interpolate without checking for emptiness.
+    """
+    if not rules:
+        return "_(no rules yet — first round of self-evaluation hasn't completed)_"
+    blocks: list[str] = []
+    for n, r in enumerate(rules, start=1):
+        scope_bits: list[str] = []
+        if r.pov_scope and r.pov_scope != ["all"]:
+            scope_bits.append(f"POV: {', '.join(r.pov_scope)}")
+        if r.scene_scope and r.scene_scope != ["all"]:
+            scope_bits.append(f"scene: {', '.join(r.scene_scope)}")
+        scope = f" _({'; '.join(scope_bits)})_" if scope_bits else ""
+        block = f"{n}. **[{r.id}]** {r.text.strip()}{scope}"
+        extra = r.body_extra.strip()
+        if extra:
+            indented = "\n".join("   " + line if line else "" for line in extra.splitlines())
+            block += "\n\n" + indented
+        blocks.append(block)
+    return "\n\n".join(blocks)
+
+
 def promote_rule(
     rule_id: str,
     *,

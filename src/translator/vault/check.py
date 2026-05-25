@@ -38,7 +38,15 @@ class VaultCheckReport:
 
 _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
     VAULT.prompt_template: ("$rules", "$glossary", "$reference_parts", "$new_part_id", "$new_jp_chapter"),
-    VAULT.comparison_template: ("$part_id", "$pov", "$jp_source", "$llm_translation", "$reference_translation"),
+    VAULT.comparison_template: (
+        "$active_rules",
+        "$glossary",
+        "$part_id",
+        "$pov",
+        "$jp_source",
+        "$llm_translation",
+        "$reference_translation",
+    ),
     VAULT.clustering_template: ("$active_rules", "$pruned_rules", "$deviations"),
 }
 

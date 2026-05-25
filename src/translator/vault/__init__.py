@@ -26,6 +26,7 @@ from translator.vault.notes import Note, read_note, write_note
 from translator.vault.rules import (
     Rule,
     RuleState,
+    format_rules_for_prompt,
     load_active_rules,
     load_pruned_rules,
     load_rules_by_state,
@@ -38,6 +39,7 @@ __all__ = [
     "Note",
     "Rule",
     "RuleState",
+    "format_rules_for_prompt",
     "init_vault",
     "is_initialized",
     "load_active_rules",

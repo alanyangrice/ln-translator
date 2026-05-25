@@ -16,6 +16,7 @@ the v3 loop) is a separate concern handled by ``cli.evaluate report``.
 from __future__ import annotations
 
 import json
+import re
 from string import Template
 from typing import Any
 
@@ -23,8 +24,49 @@ from translator.config import MODELS, PATHS, REASONING, VAULT
 from translator.inference.provider import complete
 from translator.vault import load_active_rules, load_pruned_rules, write_rule
 from translator.vault.notes import list_notes, read_note
-from translator.vault.rules import Rule
+from translator.vault.rules import Rule, load_rules_by_state
 from translator.vault.templates import CLUSTERING_TEMPLATE
+
+
+# Deviation IDs are formed by `vault.deviations.write_deviation_note` as
+# ``part-{chapter:03d}-r{round:02d}-d{idx}`` — extract the chapter number
+# so we can name rules by the part they were learned from rather than the
+# round they were proposed in.
+_DEVIATION_ID_RE = re.compile(r"part-(\d{3})-r\d+-d\d+", re.ASCII)
+
+
+def _chapter_from_supporting(supporting: list[str]) -> str:
+    """Pick the primary chapter for a rule from its supporting deviations.
+
+    Returns a zero-padded 3-digit string (e.g. ``"011"``). Falls back to
+    ``"000"`` if the supporting list is missing or unparseable, which is
+    harmless: the rule still writes, just under the ``rule-000-XX``
+    namespace as a flag for human review.
+    """
+    for dev_id in supporting:
+        match = _DEVIATION_ID_RE.match(dev_id.strip())
+        if match:
+            return match.group(1)
+    return "000"
+
+
+def _next_rule_index(chapter: str) -> int:
+    """Return the next sequential rule number for ``chapter`` across all states.
+
+    Scans candidate, active, pruned, and inactive — collisions across
+    states would silently overwrite a rule's history if we ignored them.
+    """
+    pattern = re.compile(rf"rule-{chapter}-(\d+)$")
+    used: set[int] = set()
+    for state in ("candidate", "active", "pruned", "inactive"):
+        for r in load_rules_by_state(state):
+            m = pattern.match(r.id)
+            if m:
+                used.add(int(m.group(1)))
+    n = 1
+    while n in used:
+        n += 1
+    return n
 
 
 def _format_rules_for_prompt(rules: list[Rule]) -> str:
@@ -50,6 +92,63 @@ def _load_deviation_notes_for_rounds(round_numbers: list[int]) -> str:
                 continue
             blocks.append(f"### {path.name}\n{note.body.strip()}")
     return "\n\n".join(blocks) if blocks else "_(no deviation notes found)_"
+
+
+CLUSTERING_JSON_SCHEMA: dict = {
+    "name": "candidate_rules",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "rules": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "rule_text": {"type": "string"},
+                        "pov_scope": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": ["miyagi", "sendai", "maika", "all"],
+                            },
+                        },
+                        "scene_scope": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": [
+                                    "dialogue",
+                                    "internal_monologue",
+                                    "action",
+                                    "descriptive",
+                                    "all",
+                                ],
+                            },
+                        },
+                        "priority": {"type": "integer"},
+                        "supporting_deviations": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                        "rationale": {"type": "string"},
+                    },
+                    "required": [
+                        "rule_text",
+                        "pov_scope",
+                        "scene_scope",
+                        "priority",
+                        "supporting_deviations",
+                        "rationale",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["rules"],
+        "additionalProperties": False,
+    },
+}
 
 
 def _parse_candidate_rules(raw: str) -> list[dict[str, Any]]:
@@ -99,14 +198,22 @@ def cluster_into_candidate_rules(
         model=model,
         prompt=prompt,
         temperature=0.2,
-        max_tokens=4096,
+        max_tokens=32768,
         reasoning_effort=REASONING.clustering,  # type: ignore[arg-type]
+        json_schema=CLUSTERING_JSON_SCHEMA,
     )
     payload = _parse_candidate_rules(raw)
 
     rules: list[Rule] = []
-    for i, item in enumerate(payload):
-        rule_id = item.get("id") or f"rule-{promote_round:02d}-{i + 1:02d}"
+    chapter_counters: dict[str, int] = {}
+    for item in payload:
+        supporting = list(item.get("supporting_deviations") or [])
+        chapter = _chapter_from_supporting(supporting)
+        if chapter not in chapter_counters:
+            chapter_counters[chapter] = _next_rule_index(chapter)
+        seq = chapter_counters[chapter]
+        chapter_counters[chapter] += 1
+        rule_id = item.get("id") or f"rule-{chapter}-{seq:02d}"
         rule = Rule(
             id=rule_id,
             state="candidate",

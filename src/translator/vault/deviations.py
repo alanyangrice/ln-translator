@@ -26,6 +26,8 @@ DeviationCategory = Literal[
     "idiom",
     "pronoun",
     "formatting",
+    "translationese",
+    "style-rhythm",
 ]
 Severity = Literal["minor", "major"]
 
@@ -39,6 +41,7 @@ class Deviation:
     llm_rendering: str
     reference_rendering: str
     notes: str = ""
+    violates_rule_id: str = ""  # empty = no active rule violated; otherwise e.g. "rule-000-06"
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -49,6 +52,7 @@ class Deviation:
             "llm_rendering": self.llm_rendering,
             "reference_rendering": self.reference_rendering,
             "notes": self.notes,
+            "violates_rule_id": self.violates_rule_id,
         }
 
 
@@ -94,6 +98,8 @@ class DeviationNote:
                     f"- **Reference rendering:** {d.reference_rendering}",
                 ]
             )
+            if d.violates_rule_id:
+                lines.append(f"- **Violates rule:** [[{d.violates_rule_id}]]")
             if d.notes:
                 lines.append(f"- **Notes:** {d.notes}")
             lines.append("")

@@ -13,8 +13,11 @@ import json
 from string import Template
 
 from translator.config import MODELS, PATHS, REASONING, VAULT
+from translator.glossary import format_for_prompt as format_glossary_for_prompt
+from translator.glossary import load_glossary
 from translator.inference.provider import complete
 from translator.prep.pov import POVLookup, load_pov_lookup
+from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.deviations import Deviation, DeviationNote, write_deviation_note
 from translator.vault.templates import COMPARISON_TEMPLATE
 
@@ -24,6 +27,68 @@ def _load_comparison_template() -> str:
     if vault_path.exists():
         return vault_path.read_text(encoding="utf-8")
     return COMPARISON_TEMPLATE
+
+
+DEVIATIONS_JSON_SCHEMA: dict = {
+    "name": "deviations",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "deviations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "tense",
+                                "voice/register",
+                                "attribution",
+                                "glossary",
+                                "sentence-structure",
+                                "omission",
+                                "addition",
+                                "idiom",
+                                "pronoun",
+                                "formatting",
+                                "translationese",
+                                "style-rhythm",
+                            ],
+                        },
+                        "severity": {"type": "string", "enum": ["minor", "major"]},
+                        "pov_specific": {"type": "boolean"},
+                        "jp_source": {"type": "string"},
+                        "llm_rendering": {"type": "string"},
+                        "reference_rendering": {"type": "string"},
+                        "notes": {"type": "string"},
+                        "violates_rule_id": {
+                            "type": "string",
+                            "description": (
+                                "ID of the active rule this deviation violates "
+                                "(e.g. 'rule-000-06'). Empty string if none."
+                            ),
+                        },
+                    },
+                    "required": [
+                        "category",
+                        "severity",
+                        "pov_specific",
+                        "jp_source",
+                        "llm_rendering",
+                        "reference_rendering",
+                        "notes",
+                        "violates_rule_id",
+                    ],
+                    "additionalProperties": False,
+                },
+            }
+        },
+        "required": ["deviations"],
+        "additionalProperties": False,
+    },
+}
 
 
 def _parse_deviations(raw: str) -> list[Deviation]:
@@ -59,6 +124,7 @@ def _parse_deviations(raw: str) -> list[Deviation]:
                 llm_rendering=d.get("llm_rendering", ""),
                 reference_rendering=d.get("reference_rendering", ""),
                 notes=d.get("notes", ""),
+                violates_rule_id=d.get("violates_rule_id", ""),
             )
         )
     return out
@@ -83,19 +149,24 @@ def extract_deviations(
     lookup = lookup or load_pov_lookup()
     pov = lookup.pov(part_id)
     model = model or MODELS.comparison
+    rules = load_active_rules()
+    glossary_entries = load_glossary()
     prompt = Template(_load_comparison_template()).safe_substitute(
         part_id=part_id,
         pov=pov,
         jp_source=jp,
         llm_translation=llm_translation,
         reference_translation=reference,
+        active_rules=format_rules_for_prompt(rules),
+        glossary=format_glossary_for_prompt(glossary_entries),
     )
     raw = complete(
         model=model,
         prompt=prompt,
         temperature=0.1,
-        max_tokens=4096,
+        max_tokens=32768,  # JSON array can be long; reasoning tokens count too
         reasoning_effort=REASONING.comparison,  # type: ignore[arg-type]
+        json_schema=DEVIATIONS_JSON_SCHEMA,
     )
     deviations = _parse_deviations(raw)
     note = DeviationNote(

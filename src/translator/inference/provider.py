@@ -53,6 +53,7 @@ def complete(
     temperature: float = 0.4,
     max_tokens: int = 4096,
     reasoning_effort: ReasoningEffort | None = None,
+    json_schema: dict | None = None,
     provider: Provider | None = None,
 ) -> str:
     """Send a single completion request and return the text content.
@@ -61,11 +62,18 @@ def complete(
     and ignored for Anthropic. ``temperature`` is honored for Anthropic
     when the model accepts it; OpenAI reasoning models ignore it on the
     server side.
+
+    ``json_schema`` (OpenAI only) enables structured outputs: the model
+    is forced to emit JSON conforming to the schema and the SDK guarantees
+    parseability. Pass a JSON-schema dict (with at minimum ``type`` /
+    ``properties`` / ``required``); it's wrapped in the Responses API
+    ``text.format`` envelope automatically. Anthropic doesn't expose an
+    equivalent so the parameter is ignored when routed there.
     """
     provider = provider or detect_provider(model)
     if provider == "anthropic":
         return _complete_anthropic(model, prompt, system, temperature, max_tokens)
-    return _complete_openai(model, prompt, system, max_tokens, reasoning_effort)
+    return _complete_openai(model, prompt, system, max_tokens, reasoning_effort, json_schema)
 
 
 def _complete_openai(
@@ -74,6 +82,7 @@ def _complete_openai(
     system: str | None,
     max_tokens: int,
     reasoning_effort: ReasoningEffort | None,
+    json_schema: dict | None = None,
 ) -> str:
     """Call OpenAI via the Responses API.
 
@@ -94,6 +103,15 @@ def _complete_openai(
         kwargs["instructions"] = system
     if reasoning_effort:
         kwargs["reasoning"] = {"effort": reasoning_effort}
+    if json_schema is not None:
+        kwargs["text"] = {
+            "format": {
+                "type": "json_schema",
+                "name": json_schema.get("name", "response"),
+                "schema": json_schema.get("schema", json_schema),
+                "strict": json_schema.get("strict", True),
+            }
+        }
 
     resp = client.responses.create(**kwargs)
     # The SDK exposes a flattened convenience field that concatenates all

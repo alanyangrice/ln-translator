@@ -11,3 +11,5 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | 宮城 | Miyagi | No honorific (Sendai POV) |
 | ピアス | earrings | — |
 | 「」 | 「」 | Preserve Japanese dialogue brackets |
+| チェスト | drawers | Refers to a chest of drawers / dresser, never bare "chest" (which reads as the body part) |
+| ペン | mechanical pencil | When the scene already established the writing implement as a mechanical pencil; otherwise context-dependent |

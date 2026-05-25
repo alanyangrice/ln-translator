@@ -21,7 +21,7 @@ Below are recently translated chapters shown as Japanese-English pairs.
 Translate the new chapter at the end to match this translator's voice,
 style, and conventions exactly.
 
-# RULES (learned from previous evaluations)
+# RULES (always follow these)
 
 $rules
 
@@ -46,20 +46,41 @@ $new_jp_chapter
 COMPARISON_TEMPLATE = """\
 You are auditing a machine translation of a Japanese web novel chapter
 against the established human translator's reference rendering. Your job
-is to surface *systematic* deviations that should be encoded as rules,
-not isolated word-choice differences.
+is to surface *systematic* deviations that should drive rule promotion,
+rule pruning, and glossary updates — not isolated word-choice differences.
 
 # Inputs
 
-You will receive three blocks: the Japanese source, the LLM's English
-output, and the human translator's English reference.
+You will receive:
+
+* The current set of **active rules** the LLM was supposed to follow.
+* The current **glossary** (hard-constraint term mappings the LLM was
+  supposed to use).
+* The Japanese source.
+* The LLM's English output.
+* The human translator's English reference.
+
+# How to use the rules and glossary
+
+* **Treat the active rules as ground truth for what "correct" means.**
+  If the LLM's rendering violates a rule, flag it with that rule's ID
+  in the `violates_rule_id` field. Rule violations are the most
+  actionable signal — they tell us a rule isn't working.
+* **Treat glossary entries the same way.** If the LLM used a term that
+  contradicts a glossary mapping (e.g. it wrote "muffler" when the
+  glossary says マフラー → "scarf"), flag with `category: glossary`.
+* **Don't propose new rules that duplicate existing active or pruned
+  rules.** Just flag the violation; the clustering step decides whether
+  to update the existing rule.
 
 # What to ignore
 
-* Acceptable synonym variation ("she said quietly" vs "she said softly").
-* Minor word-order differences that don't change meaning.
-* Stylistic flourishes that are equally valid English renderings of the
-  same Japanese content.
+* Genuine synonym variation **where both renderings are natural native
+  English** ("she said quietly" vs "she said softly"). Calques and
+  unnatural noun-phrase choices are NOT synonyms — flag those as
+  `translationese` even if the literal meaning matches.
+* Minor word-order differences that don't change meaning *and* don't
+  change rhythm noticeably.
 
 # What to flag
 
@@ -67,7 +88,7 @@ For each deviation, return a JSON object with these fields:
 
 * `category` — one of: `tense`, `voice/register`, `attribution`,
   `glossary`, `sentence-structure`, `omission`, `addition`, `idiom`,
-  `pronoun`, `formatting`.
+  `pronoun`, `formatting`, `translationese`, `style-rhythm`.
 * `severity` — `minor` (stylistic) or `major` (semantic).
 * `pov_specific` — `true` if the deviation seems specific to this POV
   (Miyagi, Sendai, Maika), `false` if it's universal.
@@ -75,10 +96,20 @@ For each deviation, return a JSON object with these fields:
 * `llm_rendering` — what the LLM wrote.
 * `reference_rendering` — what the human translator wrote.
 * `notes` — one sentence explaining the deviation.
+* `violates_rule_id` — the ID of the active rule this deviation
+  violates (e.g. `rule-000-06`), or empty string if no active rule
+  applies. Pick the *most specific* rule when multiple could match.
 
-Return ONLY a JSON array of these objects, no surrounding prose.
+Return a JSON object of the form `{"deviations": [...]}` containing the
+deviations array; no surrounding prose.
 
 # Materials
+
+## Active rules
+$active_rules
+
+## Glossary
+$glossary
 
 ## Part ID
 $part_id
@@ -125,7 +156,8 @@ A JSON array of candidate rule objects, each with:
   the rule.
 * `rationale` — one sentence explaining why this is a pattern, not noise.
 
-Return ONLY the JSON array.
+Return a JSON object of the form `{"rules": [...]}` containing the
+candidate rule objects; no surrounding prose.
 
 # Materials
 

@@ -668,8 +668,21 @@ def evaluate_score(
 def evaluate_judge(
     parts: str = typer.Option(..., "--parts", help="Comma-separated part ids or 'holdout'."),
     model: str | None = typer.Option(None, "--model", help="Override MODELS.judge."),
+    show_rationales: bool = typer.Option(
+        True,
+        "--rationales/--no-rationales",
+        help="Print per-axis rationales under the score table.",
+    ),
 ) -> None:
-    """LLM-as-judge rubric scoring per chapter."""
+    """LLM-as-judge rubric scoring per chapter.
+
+    Writes ``data/output/<part>/judge.json`` for each chapter so the
+    rationales and raw judge payload are inspectable after the run; the
+    in-memory ``JudgeResult`` is otherwise discarded once the table prints.
+    """
+    from datetime import UTC, datetime
+
+    from translator.config import MODELS
     from translator.eval import judge_translation
     from translator.prep.corpus import load_part_en, load_part_jp
     from translator.prep.holdout import load_holdout
@@ -688,6 +701,8 @@ def evaluate_judge(
     table = Table(title="Judge ratings")
     for col in ("part", "POV", "sem", "voice", "natural", "style", "mean"):
         table.add_column(col)
+
+    judged: list[tuple[str, object]] = []
     for pid in part_ids:
         out_path = PATHS.output / pid / "translation.en.txt"
         if not out_path.exists():
@@ -707,7 +722,38 @@ def evaluate_judge(
             str(result.semantic_accuracy), str(result.voice_fidelity),
             str(result.naturalness), str(result.style_match), f"{result.mean:.2f}",
         )
+
+        judge_path = PATHS.output / pid / "judge.json"
+        payload = {
+            "part_id": pid,
+            "pov": lookup.pov(pid),
+            "model": model or MODELS.judge,
+            "judged_at_utc": datetime.now(UTC).isoformat(timespec="seconds"),
+            "scores": {
+                "semantic_accuracy": result.semantic_accuracy,
+                "voice_fidelity": result.voice_fidelity,
+                "naturalness": result.naturalness,
+                "style_match": result.style_match,
+                "mean": result.mean,
+            },
+            "rationales": result.rationales,
+            "raw": result.raw,
+        }
+        judge_path.parent.mkdir(parents=True, exist_ok=True)
+        judge_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        judged.append((pid, result))
+
     console.print(table)
+
+    if judged:
+        console.print(f"[green]Wrote[/green] judge.json for {len(judged)} part(s)")
+    if show_rationales:
+        for pid, result in judged:
+            console.print(f"\n[bold cyan]{pid}[/bold cyan] rationales")
+            for axis in ("semantic_accuracy", "voice_fidelity", "naturalness", "style_match"):
+                score = getattr(result, axis)
+                rationale = result.rationales.get(axis, "")
+                console.print(f"  [bold]{axis}[/bold] [{score}]: {rationale}")
 
 
 @evaluate_app.command("report")

@@ -25,7 +25,8 @@ A JSON array of candidate rule objects, each with:
   the rule.
 * `rationale` — one sentence explaining why this is a pattern, not noise.
 
-Return ONLY the JSON array.
+Return a JSON object of the form `{"rules": [...]}` containing the
+candidate rule objects; no surrounding prose.
 
 # Materials
 

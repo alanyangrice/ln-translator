@@ -16,8 +16,7 @@ from translator.config import PATHS, VAULT
 from translator.glossary import format_for_prompt, load_glossary
 from translator.inference.window import Window
 from translator.prep.corpus import Part, load_part
-from translator.vault import load_active_rules
-from translator.vault.rules import Rule
+from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.templates import PROMPT_TEMPLATE
 
 
@@ -42,27 +41,6 @@ def _load_template() -> tuple[str, str]:
     if vault_template.exists():
         return vault_template.read_text(encoding="utf-8"), "vault"
     return PROMPT_TEMPLATE, "in-code"
-
-
-def _format_rules(rules: list[Rule]) -> str:
-    """Render active rules as a Markdown list, scoped tags shown inline.
-
-    Empty rule list yields an explicit "no rules yet" line so the
-    template stays well-formed and the model isn't surprised by a blank
-    section.
-    """
-    if not rules:
-        return "_(no rules yet — first round of self-evaluation hasn't completed)_"
-    lines: list[str] = []
-    for r in rules:
-        scope_bits: list[str] = []
-        if r.pov_scope and r.pov_scope != ["all"]:
-            scope_bits.append(f"POV: {', '.join(r.pov_scope)}")
-        if r.scene_scope and r.scene_scope != ["all"]:
-            scope_bits.append(f"scene: {', '.join(r.scene_scope)}")
-        scope = f" _({'; '.join(scope_bits)})_" if scope_bits else ""
-        lines.append(f"- {r.text.strip()}{scope}")
-    return "\n".join(lines)
 
 
 def _format_window(window: Window) -> str:
@@ -104,7 +82,7 @@ def assemble_prompt(
         notes.append("prompt template loaded from in-code default; vault not initialized")
 
     rendered = template.safe_substitute(
-        rules=_format_rules(rules),
+        rules=format_rules_for_prompt(rules),
         glossary=format_for_prompt(glossary_entries),
         reference_parts=_format_window(window),
         new_part_id=target_part_id,
