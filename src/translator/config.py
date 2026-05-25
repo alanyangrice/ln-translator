@@ -197,6 +197,13 @@ class Thresholds:
     # Self-evaluation cadence
     deviation_batch_size: int = 30
 
+    # Translation output cap (passed as ``max_tokens`` to the provider).
+    # The longest EN chapter in the corpus is ~17.6K chars (~4.4K
+    # tokens). 16K gives generous headroom and stays well under Claude
+    # Opus 4.7's 32K output limit. Bump if you start translating
+    # longer arcs or a chapter near the cap.
+    translation_max_tokens: int = 16384
+
 
 THRESHOLDS = Thresholds()
 

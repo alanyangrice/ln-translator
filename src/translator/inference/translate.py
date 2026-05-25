@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from translator.config import MODELS, PATHS
+from translator.config import MODELS, PATHS, THRESHOLDS
 from translator.inference.prompt import AssembledPrompt, assemble_prompt
 from translator.inference.provider import complete, detect_provider
 from translator.inference.window import Window, build_window
@@ -102,7 +102,17 @@ def translate_part(
     if not dry_run:
         provider = detect_provider(model)
         notes.append(f"calling {provider} with model={model}")
-        translation = complete(model=model, prompt=prompt.text)
+        # Literary chapters routinely exceed the provider default
+        # (4K output tokens). The longest EN chapter in the corpus is
+        # ~4.5K tokens, so 16K gives ~3.5× headroom and is well below
+        # Claude Opus 4.7's 32K output cap. Tune via
+        # ``THRESHOLDS.translation_max_tokens`` if a future chapter
+        # demands more.
+        translation = complete(
+            model=model,
+            prompt=prompt.text,
+            max_tokens=THRESHOLDS.translation_max_tokens,
+        )
 
     output_path: Path | None = None
     if write_output:
