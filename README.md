@@ -4,15 +4,22 @@ JP-EN literary translation pipeline for the Japanese web novel
 *仙台さんは余計なことばかり言う* ("Sendai-san Always Says Such Unnecessary Things"),
 designed to match an established human translator's voice across 229 parallel parts.
 
-## Approach (v3)
+## Approach
 
-The pipeline is built on two ideas:
+The pipeline is built on three ideas:
 
 1. **A sliding window of recent translated chapters** provides rich
    in-context style examples to a strong base model — no fine-tuning
    required at the start. Each translation call sees the previous N
    parts as JP-EN pairs.
-2. **A self-improving evaluation loop** compares the model's output to
+2. **A 16-dimension style profile** is extracted once from the EN
+   reference corpus (tone, voice, sentence structure, narrative
+   distance, pacing, figurative language, …) and injected into every
+   translation, comparison, and judge prompt as a stable description
+   of the target voice. The profile lives in
+   `knowledge-vault/style/` as one Markdown file per dimension and
+   can be hand-edited.
+3. **A self-improving evaluation loop** compares the model's output to
    the existing human translation, extracts deviation patterns,
    clusters them into rules, and feeds those rules back into the
    prompt. Rules accumulate in an Obsidian-friendly Markdown vault
@@ -20,6 +27,37 @@ The pipeline is built on two ideas:
 
 Fine-tuning is treated as a last-resort escalation, not a starting
 point. See the v3 handoff document for the full design rationale.
+
+### Architecture
+
+```mermaid
+flowchart LR
+    JP([JP source chapter])
+    HUB["Sliding window<br/>+ style profile<br/>+ rules"]
+    MODEL([Translation model])
+    DRAFT(["EN draft<br/>+ validators"])
+    COMPARE(["Human reference<br/>comparison"])
+
+    JP --> HUB
+    HUB --> MODEL
+    MODEL --> DRAFT
+    DRAFT --> COMPARE
+    COMPARE -. "deviations → rules → next translation" .-> HUB
+
+    classDef hub fill:#3B4F8C,stroke:#3B4F8C,color:#ffffff,font-weight:bold
+    classDef node fill:#FAFAF7,stroke:#3B4F8C,color:#3B4F8C
+    class HUB hub
+    class JP,MODEL,DRAFT,COMPARE node
+    linkStyle 4 stroke:#C77A2A,stroke-width:2px,color:#C77A2A
+```
+
+Each new chapter flows through a single prompt that fuses the **sliding
+window** of recently translated pairs, the **16-dimension style
+profile**, the **glossary**, and the **active rules**. The model's
+draft is validated and then compared against the human reference; the
+deviations are clustered into candidate rules that, once promoted,
+feed the next translation. The result is a closed loop that improves
+in-place — Markdown rule vault, no fine-tuning.
 
 ### Models
 
@@ -31,12 +69,13 @@ Defaults use the latest frontier models as of May 2026:
 | `comparison` | `gpt-5.5` | Different family from `translation` to avoid self-graded blind spots. Reasoning effort `high`. |
 | `clustering` | `gpt-5.5` | Operates on extracted notes; reasoning effort `medium`. |
 | `judge` | `gpt-5.5` | Reasoning effort `high`. |
+| `style_extraction` | `gpt-5.5` | One-shot characterization over the EN corpus; reasoning effort `high`. |
 
 OpenAI calls go through the Responses API so `reasoning.effort` is
-tunable per role (`REASONING_EFFORT_{COMPARISON,CLUSTERING,JUDGE}` in
-`.env`, allowed values `low`/`medium`/`high`/`xhigh`). Anthropic Opus
-4.7 rejects non-default `temperature`/`top_p`/`top_k`, so the provider
-helper omits them automatically for that family.
+tunable per role (`REASONING_EFFORT_{COMPARISON,CLUSTERING,JUDGE,STYLE_EXTRACTION}`
+in `.env`, allowed values `low`/`medium`/`high`/`xhigh`). Anthropic
+Opus 4.7 rejects non-default `temperature`/`top_p`/`top_k`, so the
+provider helper omits them automatically for that family.
 
 ### Scope
 
@@ -105,6 +144,11 @@ uv run translator vault status        # rule / deviation / round counts
 # Glossary
 uv run translator glossary show       # print active glossary
 
+# Style profile (one-shot bootstrap; injected into every prompt)
+uv run translator style extract --through part_050 --dry-run
+uv run translator style extract --through part_050
+uv run translator style show          # provenance + per-dimension sizes
+
 # Translate (dry-run skips API calls; great for inspecting prompts)
 uv run translator translate --part 4 --dry-run
 uv run translator translate --part 4
@@ -128,6 +172,7 @@ src/translator/
   prep/         POV lookup, stratified holdout, parallel corpus loaders
   vault/        knowledge-vault read/write helpers (rules, deviations, summaries)
   glossary/     vault-aware glossary loader (fallback to data/metadata/glossary_seed.json)
+  style/        16-dimension style profile extractor + loader
   inference/    sliding-window builder, prompt assembler, provider abstraction
   validation/   dialogue parity, name frequency, length ratio checks
   eval/         COMET / BERTScore / deviation extractor / rule clusterer / LLM judge
@@ -140,10 +185,11 @@ data/
 
 knowledge-vault/  (created by `translator vault init`; tracked in git)
   glossary/         curated term mappings
+  style/            16 per-dimension profile files (01-tone.md … 16-character-voice.md)
   rules/{active,candidate,pruned,inactive}/
   deviations/round-NN/
   evaluations/round-NN-summary.md
-  config/{prompt-template,comparison-prompt-template}.md
+  config/{prompt-template,comparison-prompt-template,clustering-prompt-template}.md
 
 tests/                pytest suites
 ```
@@ -172,12 +218,19 @@ tests/                pytest suites
    prompt template + glossary scaffold. Until vault rules are populated
    the prompt assembler still works (it falls back to the in-code
    template constants and the JSON glossary seed).
-6. **Round 1**: `translator translate --part X` for each holdout
+6. `translator style extract --through part_050` — one-shot bootstrap
+   of the 16-dimension style profile from the EN corpus (minus
+   holdout). Writes `knowledge-vault/style/01-tone.md` …
+   `16-character-voice-differentiation.md`. The profile is injected
+   into every translation, comparison, and judge prompt via the
+   `$style_profile` placeholder; until extracted, prompts include a
+   placeholder notice and translation continues normally.
+7. **Round 1**: `translator translate --part X` for each holdout
    member, then `evaluate deviations --round 1 --parts holdout`,
    then `evaluate cluster --rounds 1 --promote-round 1`.
-7. Promote / prune candidate rules in Obsidian (or by editing the
+8. Promote / prune candidate rules in Obsidian (or by editing the
    note frontmatter). Re-translate the holdout to validate.
-8. Iterate. Each round is one git commit on the vault so any
+9. Iterate. Each round is one git commit on the vault so any
    translation can be reproduced by checkout.
 
 ## Calibration

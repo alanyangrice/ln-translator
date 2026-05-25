@@ -18,6 +18,7 @@ The flow per part N:
 from __future__ import annotations
 
 from translator.inference.prompt import AssembledPrompt, assemble_prompt
+from translator.inference.revise import RevisedPrompt, assemble_revise_prompt, revise_translation
 from translator.inference.translate import (
     TranslationResult,
     UnsupportedTargetError,
@@ -28,10 +29,13 @@ from translator.inference.window import ReferencePart, Window, build_window
 __all__ = [
     "AssembledPrompt",
     "ReferencePart",
+    "RevisedPrompt",
     "TranslationResult",
     "UnsupportedTargetError",
     "Window",
     "assemble_prompt",
+    "assemble_revise_prompt",
     "build_window",
+    "revise_translation",
     "translate_part",
 ]

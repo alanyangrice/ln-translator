@@ -669,8 +669,38 @@ def translate(
     model: str | None = typer.Option(None, "--model", help="Override MODELS.translation."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Skip the network call; only assemble the prompt."),
     no_holdout_skip: bool = typer.Option(False, "--no-holdout-skip", help="Don't skip holdout members in window."),
+    revise: bool = typer.Option(
+        True,
+        "--revise/--no-revise",
+        help="Run the inline critic + revision loop after the first-pass translation.",
+    ),
+    critic_model: str | None = typer.Option(
+        None, "--critic-model", help="Override MODELS.critic."
+    ),
+    max_revisions: int | None = typer.Option(
+        None,
+        "--max-revisions",
+        help="Cap revision passes (default THRESHOLDS.critique_max_revisions). 0 = audit only.",
+    ),
+    revise_severity: str | None = typer.Option(
+        None,
+        "--revise-severity",
+        help="Severity gate: 'major' (default) or 'minor' (revise on any flag).",
+    ),
+    revise_minor_threshold: int | None = typer.Option(
+        None,
+        "--revise-minor-threshold",
+        help="Minor flag count that triggers revision when no major flags fire.",
+    ),
 ) -> None:
-    """Translate one part end-to-end. Use --dry-run to inspect the prompt without API spend."""
+    """Translate one part end-to-end with the inline critic + revise loop.
+
+    The critic always runs (cheap audit); revision is gated by severity
+    so chapters that come out clean don't pay the extra translator
+    call. Use --no-revise to skip the loop entirely (cheap baseline)
+    or --max-revisions 0 for audit-only mode (run the critic but never
+    revise).
+    """
     from translator.inference import UnsupportedTargetError, translate_part
 
     part_id = _normalize_part(part)
@@ -681,6 +711,11 @@ def translate(
             model=model,
             dry_run=dry_run,
             holdout=holdout_arg,
+            revise=revise,
+            critic_model=critic_model,
+            max_revisions=max_revisions,
+            revise_severity=revise_severity,  # type: ignore[arg-type]
+            revise_minor_threshold=revise_minor_threshold,
         )
     except UnsupportedTargetError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -694,6 +729,17 @@ def translate(
     table.add_row("template_source", result.prompt.template_source)
     table.add_row("window parts", ", ".join(result.prompt.window_part_ids) or "(none)")
     table.add_row("active rules", ", ".join(result.prompt.active_rule_ids) or "(none)")
+    if result.critiques:
+        table.add_row(
+            "revision passes",
+            f"{result.revision_count} (max {max_revisions if max_revisions is not None else '—'})",
+        )
+        for i, c in enumerate(result.critiques):
+            label = "draft_v1" if i == 0 else f"after revision #{i}"
+            table.add_row(
+                f"critic [{label}]",
+                f"{len(c.major_flags)} major + {len(c.minor_flags)} minor",
+            )
     if result.output_path:
         table.add_row("output", str(result.output_path.relative_to(PATHS.repo_root)))
     console.print(table)
@@ -781,6 +827,58 @@ def evaluate_deviations(
             model=model,
         )
         console.print(f"[green]{pid}[/green]: {len(note.deviations)} deviations recorded")
+
+
+@evaluate_app.command("critique")
+def evaluate_critique(
+    parts: str = typer.Option(..., "--parts", help="Comma-separated part ids (or 'holdout')."),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.critic."),
+    show_flags: bool = typer.Option(False, "--show-flags", help="Print each flag's span + suggested rewrite."),
+) -> None:
+    """Run the inline critic on existing drafts without re-translating.
+
+    Reads each part's ``data/output/<part>/translation.en.txt`` and
+    persists ``critique.json`` next to it. Useful for inspecting the
+    critic's calibration before turning on the full revision loop.
+    """
+    from translator.eval import critique_translation
+    from translator.prep.corpus import load_part_jp
+    from translator.prep.holdout import load_holdout
+
+    if parts.strip() == "holdout":
+        plan = load_holdout()
+        if plan is None:
+            console.print("[red]No holdout on disk; run `translator prep holdout` first.[/red]")
+            raise typer.Exit(1)
+        part_ids = list(plan.part_ids)
+    else:
+        part_ids = [p.strip() for p in parts.split(",") if p.strip()]
+
+    for pid in part_ids:
+        draft_path = PATHS.output / pid / "translation.en.txt"
+        if not draft_path.exists():
+            console.print(f"[yellow]skip {pid}: no draft at {draft_path}[/yellow]")
+            continue
+        result = critique_translation(
+            part_id=pid,
+            jp=load_part_jp(pid),
+            draft=draft_path.read_text(encoding="utf-8"),
+            model=model,
+        )
+        result.write()
+        console.print(
+            f"[green]{pid}[/green]: {len(result.major_flags)} major + "
+            f"{len(result.minor_flags)} minor flag(s) "
+            f"[dim](critique.json written)[/dim]"
+        )
+        if show_flags:
+            for i, f in enumerate(result.flags, 1):
+                console.print(
+                    f"  [bold]{i}.[/bold] [{f.severity}/{f.category}] "
+                    f"{f.span!r} → {f.suggested_rewrite!r}"
+                )
+                if f.notes:
+                    console.print(f"     [dim]{f.notes}[/dim]")
 
 
 @evaluate_app.command("cluster")

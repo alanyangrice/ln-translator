@@ -17,8 +17,10 @@ from translator.vault.notes import list_notes
 from translator.vault.templates import (
     CLUSTERING_TEMPLATE,
     COMPARISON_TEMPLATE,
+    CRITIQUE_TEMPLATE,
     GLOSSARY_SCAFFOLD,
     PROMPT_TEMPLATE,
+    REVISE_TEMPLATE,
     STYLE_README,
     VAULT_README,
 )
@@ -78,6 +80,8 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
         (root / VAULT.prompt_template, PROMPT_TEMPLATE),
         (root / VAULT.comparison_template, COMPARISON_TEMPLATE),
         (root / VAULT.clustering_template, CLUSTERING_TEMPLATE),
+        (root / VAULT.critique_template, CRITIQUE_TEMPLATE),
+        (root / VAULT.revise_template, REVISE_TEMPLATE),
         (root / VAULT.glossary_file, GLOSSARY_SCAFFOLD),
         (root / VAULT.style_readme, STYLE_README),
         (root / "README.md", VAULT_README),

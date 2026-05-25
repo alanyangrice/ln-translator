@@ -1,9 +1,21 @@
 """Translation orchestrator.
 
-Glues the window builder, prompt assembler, and provider together. The
-``--dry-run`` flag skips the network call and writes only the assembled
-prompt to disk; this is the default first sanity check after scaffolding
-since it doesn't require API keys or paid tokens.
+Glues the window builder, prompt assembler, provider, and the inline
+critic + revision loop together. The high-level flow per chapter:
+
+1. Build the sliding window and assemble the first-pass prompt.
+2. Call the translator model. Persist as ``draft_v1``.
+3. (Optional, default on) Call the inline critic against
+   ``(jp, draft_v1)``. Persist ``critique.json``.
+4. If the critic emits flags above the configured severity gate, run
+   one (or more) revision pass(es): assemble a revision prompt that
+   includes the previous draft + flags, call the translator again,
+   re-critique. Persist intermediate drafts at each iteration.
+5. Final translation file is the latest draft.
+
+``--dry-run`` short-circuits steps 2–4 and writes only the assembled
+prompt; ``--no-revise`` short-circuits steps 3–4 and writes the
+first-pass draft as the final translation.
 """
 
 from __future__ import annotations
@@ -11,10 +23,17 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 from translator.config import MODELS, PATHS, THRESHOLDS
+from translator.eval.inline_critic import (
+    CritiqueResult,
+    critique_translation,
+    revision_required,
+)
 from translator.inference.prompt import AssembledPrompt, assemble_prompt
 from translator.inference.provider import complete, detect_provider
+from translator.inference.revise import revise_translation
 from translator.inference.window import Window, build_window
 from translator.prep.holdout import HoldoutPlan, load_holdout
 from translator.prep.pov import POVLookup, load_pov_lookup
@@ -32,7 +51,17 @@ class UnsupportedTargetError(ValueError):
 
 @dataclass
 class TranslationResult:
-    """Output of a translation call. ``translation`` is None for dry-runs."""
+    """Output of a translation call. ``translation`` is None for dry-runs.
+
+    For revision-enabled runs:
+
+    * ``translation`` — final draft after all revision passes.
+    * ``draft_v1`` — first-pass draft, preserved for diffing.
+    * ``critiques`` — one :class:`CritiqueResult` per round (round 0
+      is the audit of ``draft_v1``; round 1+ audit each revised draft
+      if more than one revision pass runs).
+    * ``revision_count`` — how many revision passes actually executed.
+    """
 
     target_part_id: str
     target_pov: POV
@@ -42,6 +71,9 @@ class TranslationResult:
     dry_run: bool
     output_path: Path | None = None
     notes: list[str] = field(default_factory=list)
+    draft_v1: str | None = None
+    critiques: list[CritiqueResult] = field(default_factory=list)
+    revision_count: int = 0
 
 
 def translate_part(
@@ -52,8 +84,13 @@ def translate_part(
     write_output: bool = True,
     holdout: HoldoutPlan | None | object = ...,  # sentinel for "auto-load"
     lookup: POVLookup | None = None,
+    revise: bool = True,
+    critic_model: str | None = None,
+    max_revisions: int | None = None,
+    revise_severity: Literal["minor", "major"] | None = None,
+    revise_minor_threshold: int | None = None,
 ) -> TranslationResult:
-    """Translate ``part_id`` end-to-end.
+    """Translate ``part_id`` end-to-end with optional critic + revision loop.
 
     Parameters
     ----------
@@ -66,12 +103,24 @@ def translate_part(
     dry_run
         If True, skip the network call and only assemble the prompt.
     write_output
-        If True, write the prompt (and translation if not a dry run) to
+        If True, write artifacts (prompt, drafts, critique, meta) to
         ``data/output/{part_id}/``. Disable for unit tests.
     holdout
         ``None`` to ignore the holdout, a :class:`HoldoutPlan` to skip
         the listed parts as window candidates, or the default sentinel
         which auto-loads ``data/metadata/holdout.json`` if present.
+    revise
+        If True (default), run the inline critic after the first-pass
+        translation and execute a revision pass when the configured
+        severity gate fires. Disable for cheap baseline runs or when
+        the critic is the thing under test.
+    critic_model
+        Override ``MODELS.critic``. Useful for ablations.
+    max_revisions
+        Override ``THRESHOLDS.critique_max_revisions``. ``0`` runs the
+        critic but never revises (audit-only mode).
+    revise_severity / revise_minor_threshold
+        Override the gating knobs in ``THRESHOLDS``.
     """
     lookup = lookup or load_pov_lookup()
     entry = lookup.get(part_id)
@@ -99,6 +148,10 @@ def translate_part(
     model = model or MODELS.translation
     notes: list[str] = []
     translation: str | None = None
+    draft_v1: str | None = None
+    critiques: list[CritiqueResult] = []
+    revision_count = 0
+
     if not dry_run:
         provider = detect_provider(model)
         notes.append(f"calling {provider} with model={model}")
@@ -113,10 +166,43 @@ def translate_part(
             prompt=prompt.text,
             max_tokens=THRESHOLDS.translation_max_tokens,
         )
+        draft_v1 = translation
+
+        if revise:
+            translation, critiques, revision_count, revision_notes = _run_critique_revise_loop(
+                target_part_id=part_id,
+                window=window,
+                draft=translation,
+                jp=prompt.text,  # we'll use the part's JP source instead
+                model=model,
+                critic_model=critic_model,
+                max_revisions=(
+                    max_revisions
+                    if max_revisions is not None
+                    else THRESHOLDS.critique_max_revisions
+                ),
+                severity_threshold=revise_severity or THRESHOLDS.critique_revise_severity,  # type: ignore[arg-type]
+                minor_threshold=(
+                    revise_minor_threshold
+                    if revise_minor_threshold is not None
+                    else THRESHOLDS.critique_revise_minor_threshold
+                ),
+                lookup=lookup,
+            )
+            notes.extend(revision_notes)
 
     output_path: Path | None = None
     if write_output:
-        output_path = _write_output(part_id, prompt, translation, model, dry_run)
+        output_path = _write_output(
+            part_id=part_id,
+            prompt=prompt,
+            translation=translation,
+            draft_v1=draft_v1,
+            critiques=critiques,
+            revision_count=revision_count,
+            model=model,
+            dry_run=dry_run,
+        )
 
     return TranslationResult(
         target_part_id=part_id,
@@ -127,13 +213,101 @@ def translate_part(
         dry_run=dry_run,
         output_path=output_path,
         notes=notes,
+        draft_v1=draft_v1,
+        critiques=critiques,
+        revision_count=revision_count,
     )
 
 
+def _run_critique_revise_loop(
+    *,
+    target_part_id: str,
+    window: Window,
+    draft: str,
+    jp: str,  # unused; kept for signature symmetry with critique_translation
+    model: str,
+    critic_model: str | None,
+    max_revisions: int,
+    severity_threshold: Literal["minor", "major"],
+    minor_threshold: int,
+    lookup: POVLookup,
+) -> tuple[str, list[CritiqueResult], int, list[str]]:
+    """Run critic-then-revise iterations until clean or capped.
+
+    Returns ``(final_draft, critiques, revision_count, notes)``.
+
+    Even when ``max_revisions == 0`` we still run one critic pass —
+    audit-only mode is useful for baselining without paying the
+    revision cost.
+    """
+    from translator.prep.corpus import load_part_jp
+
+    notes: list[str] = []
+    critiques: list[CritiqueResult] = []
+    current_draft = draft
+    revision_count = 0
+    jp_text = load_part_jp(target_part_id)
+
+    # Round 0: audit the first-pass draft.
+    critique = critique_translation(
+        part_id=target_part_id,
+        jp=jp_text,
+        draft=current_draft,
+        model=critic_model,
+        lookup=lookup,
+    )
+    critiques.append(critique)
+    notes.append(
+        f"critic[round 0]: {len(critique.major_flags)} major + "
+        f"{len(critique.minor_flags)} minor flag(s)"
+    )
+
+    # Iterate until we've spent the revision budget or the gate stops firing.
+    while revision_count < max_revisions and revision_required(
+        critiques[-1],
+        severity_threshold=severity_threshold,
+        minor_threshold=minor_threshold,
+    ):
+        revised, _ = revise_translation(
+            target_part_id=target_part_id,
+            window=window,
+            previous_draft=current_draft,
+            critique=critiques[-1],
+            model=model,
+        )
+        revision_count += 1
+        current_draft = revised
+        next_critique = critique_translation(
+            part_id=target_part_id,
+            jp=jp_text,
+            draft=current_draft,
+            model=critic_model,
+            lookup=lookup,
+        )
+        critiques.append(next_critique)
+        notes.append(
+            f"critic[round {revision_count}]: "
+            f"{len(next_critique.major_flags)} major + "
+            f"{len(next_critique.minor_flags)} minor flag(s)"
+        )
+
+    if revision_count == 0 and critiques[0].flags:
+        notes.append(
+            "critic flagged issues but the gate did not fire; "
+            "draft kept unchanged. See critique.json."
+        )
+
+    return current_draft, critiques, revision_count, notes
+
+
 def _write_output(
+    *,
     part_id: str,
     prompt: AssembledPrompt,
     translation: str | None,
+    draft_v1: str | None,
+    critiques: list[CritiqueResult],
+    revision_count: int,
     model: str,
     dry_run: bool,
 ) -> Path:
@@ -148,12 +322,34 @@ def _write_output(
         "active_rule_ids": prompt.active_rule_ids,
         "notes": prompt.notes,
         "template_source": prompt.template_source,
+        "revision_count": revision_count,
+        "critic_rounds": [
+            {
+                "round": i,
+                "model": c.model,
+                "flag_count": len(c.flags),
+                "major_count": len(c.major_flags),
+                "minor_count": len(c.minor_flags),
+            }
+            for i, c in enumerate(critiques)
+        ],
     }
     (out_dir / "meta.json").write_text(
         json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     if translation is not None:
         (out_dir / "translation.en.txt").write_text(translation, encoding="utf-8")
+    if draft_v1 is not None and draft_v1 != translation:
+        (out_dir / "draft_v1.en.txt").write_text(draft_v1, encoding="utf-8")
+    elif (out_dir / "draft_v1.en.txt").exists() and revision_count == 0:
+        # Stale artifact from a prior revised run on the same part.
+        (out_dir / "draft_v1.en.txt").unlink()
+    if critiques:
+        # Persist the most recent critique as critique.json (the
+        # decision-relevant one). Earlier rounds are kept in the
+        # ``meta.json`` summary; full payloads can be reproduced from
+        # the JSON-schema'd model output.
+        critiques[-1].write(out_dir / "critique.json")
     return out_dir
 
 

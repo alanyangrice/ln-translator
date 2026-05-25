@@ -56,6 +56,25 @@ _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
         "$reference_translation",
     ),
     VAULT.clustering_template: ("$active_rules", "$pruned_rules", "$deviations"),
+    VAULT.critique_template: (
+        "$active_rules",
+        "$glossary",
+        "$style_profile",
+        "$part_id",
+        "$pov",
+        "$jp_source",
+        "$draft",
+    ),
+    VAULT.revise_template: (
+        "$rules",
+        "$glossary",
+        "$style_profile",
+        "$reference_parts",
+        "$new_part_id",
+        "$new_jp_chapter",
+        "$critic_flags",
+        "$previous_draft",
+    ),
 }
 
 

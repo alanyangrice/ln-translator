@@ -88,6 +88,15 @@ class VaultLayout:
     prompt_template: str = "config/prompt-template.md"
     comparison_template: str = "config/comparison-prompt-template.md"
     clustering_template: str = "config/clustering-prompt-template.md"
+    # Inference-time critic looks at (jp, draft) without a reference and
+    # surfaces translationese / voice / style-profile drift. The output
+    # feeds the revision pass below.
+    critique_template: str = "config/critique-prompt-template.md"
+    # Revision pass is a sister of the translation prompt — same
+    # rules/glossary/style/window — plus the previous draft and the
+    # critic's flags. Lives next to ``prompt_template`` so user edits
+    # to either evolve together.
+    revise_template: str = "config/revise-prompt-template.md"
 
 
 VAULT = VaultLayout()
@@ -123,6 +132,12 @@ class Models:
     # but justified here: the output is consumed by every subsequent
     # translation, so we want the deepest analysis possible.
     style_extraction: str = os.getenv("MODEL_STYLE_EXTRACTION", "gpt-5.5")
+    # Inline critic that audits the draft for translationese / voice /
+    # style-profile drift at inference time. Defaults to the same model
+    # as the offline deviation auditor so calibration carries over and
+    # the translator/critic blind spots stay diverse (Anthropic vs.
+    # OpenAI).
+    critic: str = os.getenv("MODEL_CRITIC", os.getenv("MODEL_COMPARISON", "gpt-5.5"))
 
 
 MODELS = Models()
@@ -146,6 +161,10 @@ class ReasoningEffort:
     clustering: str = os.getenv("REASONING_EFFORT_CLUSTERING", "medium")
     judge: str = os.getenv("REASONING_EFFORT_JUDGE", "high")
     style_extraction: str = os.getenv("REASONING_EFFORT_STYLE_EXTRACTION", "high")
+    # Critic runs on every translation; ``high`` is the same effort the
+    # offline deviation auditor uses since it produces the same kind of
+    # output. Drop to ``medium`` for cost-sensitive batches.
+    critic: str = os.getenv("REASONING_EFFORT_CRITIC", "high")
 
 
 REASONING = ReasoningEffort()
@@ -203,6 +222,20 @@ class Thresholds:
     # Opus 4.7's 32K output limit. Bump if you start translating
     # longer arcs or a chapter near the cap.
     translation_max_tokens: int = 16384
+
+    # Critic + revision loop knobs. The critic always runs (cheap);
+    # whether a *revision pass* is triggered depends on the gates
+    # below.
+    #
+    # * A revision is requested when the critic emits any flag with
+    #   severity == ``critique_revise_severity`` OR when the total
+    #   minor flag count meets ``critique_revise_minor_threshold``.
+    # * ``critique_max_revisions`` caps how many revision rounds run
+    #   per chapter. 1 is usually enough; 2 is the practical max
+    #   before diminishing returns.
+    critique_revise_severity: str = "major"
+    critique_revise_minor_threshold: int = 3
+    critique_max_revisions: int = 1
 
 
 THRESHOLDS = Thresholds()
