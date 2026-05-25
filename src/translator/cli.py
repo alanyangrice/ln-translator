@@ -1,0 +1,786 @@
+"""Typer CLI entrypoint.
+
+Subcommand groups follow the v3 workflow:
+
+    scrape     fetch JP/EN content
+    prep       POV lookup + stratified holdout selection
+    vault      knowledge-vault init / status
+    glossary   show / dump glossary
+    translate  assemble prompt + translate one part (supports --dry-run)
+    validate   run dialogue/name/length checks on an existing translation
+    evaluate   self-evaluation loop (deviations, cluster, judge, score, report)
+    info       resolved config
+
+The ``scrape`` group is wired end-to-end. Most of ``evaluate`` requires
+API keys; ``translate --dry-run`` and ``validate`` work without them.
+"""
+
+from __future__ import annotations
+
+import json
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from translator.config import MODELS, PATHS, SCRAPER, THRESHOLDS
+
+app = typer.Typer(
+    no_args_is_help=True,
+    add_completion=False,
+    help="ln-translator: literary translation pipeline (sliding window + rule vault).",
+)
+
+scrape_app = typer.Typer(no_args_is_help=True, help="Fetch JP and EN sources.")
+prep_app = typer.Typer(no_args_is_help=True, help="POV lookup + stratified holdout.")
+vault_app = typer.Typer(no_args_is_help=True, help="knowledge-vault init/status.")
+glossary_app = typer.Typer(no_args_is_help=True, help="View glossary entries.")
+evaluate_app = typer.Typer(no_args_is_help=True, help="Self-evaluation loop.")
+
+app.add_typer(scrape_app, name="scrape")
+app.add_typer(prep_app, name="prep")
+app.add_typer(vault_app, name="vault")
+app.add_typer(glossary_app, name="glossary")
+app.add_typer(evaluate_app, name="evaluate")
+
+console = Console()
+
+
+# ---------------------------------------------------------------------------
+# scrape
+# ---------------------------------------------------------------------------
+
+@scrape_app.command("toc")
+def scrape_toc(
+    refresh: bool = typer.Option(False, "--refresh", help="Re-fetch the ToC pages even if cached."),
+) -> None:
+    """Build data/metadata/toc.json from the EN ToC and Kakuyomu work index."""
+    from translator.scraper.toc import build_toc
+
+    PATHS.ensure()
+    entries = build_toc(refresh=refresh)
+    PATHS.toc_json.write_text(
+        json.dumps([e.model_dump() for e in entries], ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    console.print(
+        f"[green]Wrote[/green] {len(entries)} entries to {PATHS.toc_json.relative_to(PATHS.repo_root)}"
+    )
+
+
+@scrape_app.command("jp")
+def scrape_jp(
+    only: str | None = typer.Option(None, "--only", help="Comma-separated ids to scrape."),
+    limit: int | None = typer.Option(None, "--limit", help="Stop after N entries."),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-fetch even if cached."),
+) -> None:
+    """Download Kakuyomu episodes for every ToC entry that has a kakuyomu_episode_id."""
+    from translator.scraper.jp_source import scrape_all_jp
+
+    PATHS.ensure()
+    only_ids = set(only.split(",")) if only else None
+    stats = scrape_all_jp(only_ids=only_ids, limit=limit, refresh=refresh)
+    _print_kv_table(stats, "JP scrape results")
+
+
+@scrape_app.command("en")
+def scrape_en(
+    only: str | None = typer.Option(None, "--only", help="Comma-separated ids."),
+    limit: int | None = typer.Option(None, "--limit", help="Stop after N entries."),
+    refresh: bool = typer.Option(False, "--refresh", help="Re-fetch even if cached."),
+) -> None:
+    """Download avelilium.com EN posts for every ToC entry with a url_en."""
+    from translator.scraper.en_source import scrape_all_en
+
+    PATHS.ensure()
+    only_ids = set(only.split(",")) if only else None
+    stats = scrape_all_en(only_ids=only_ids, limit=limit, refresh=refresh)
+    _print_kv_table(stats, "EN scrape results")
+
+
+@scrape_app.command("review")
+def scrape_review() -> None:
+    """Print the JP-mapping needs_review entries with nearby Kakuyomu chapter
+    candidates, to help build data/metadata/kakuyomu_overrides.json."""
+    from translator.scraper.jp_source import load_toc
+    from translator.scraper.kakuyomu import fetch_work_chapters
+
+    PATHS.ensure()
+    entries = load_toc()
+    chapters = fetch_work_chapters()
+
+    table = Table(title="Entries needing JP mapping review")
+    table.add_column("entry_id")
+    table.add_column("EN ch")
+    table.add_column("EN parts")
+    table.add_column("current KU chapter")
+    table.add_column("candidates (±3)")
+    by_ch: dict[int, list] = {}
+    for e in entries:
+        if e.kind == "part" and e.mapping_confidence == "needs_review" and e.chapter_number:
+            by_ch.setdefault(e.chapter_number, []).append(e)
+    for en_ch in sorted(by_ch.keys()):
+        ents = by_ch[en_ch]
+        n_parts = len(ents)
+        current_title = ents[0].chapter_title_jp or "?"
+        current_pos = next(
+            (i for i, c in enumerate(chapters) if c.id == ents[0].kakuyomu_chapter_id),
+            None,
+        )
+        if current_pos is None:
+            candidates = "n/a"
+        else:
+            lo, hi = max(0, current_pos - 3), min(len(chapters), current_pos + 4)
+            candidates = " | ".join(
+                f"[{i}] n={len(chapters[i].episode_ids)} {chapters[i].title}" for i in range(lo, hi)
+            )
+        ids = ", ".join(e.id for e in ents)
+        table.add_row(ids, str(en_ch), str(n_parts), current_title, candidates)
+    console.print(table)
+
+
+@scrape_app.command("verify")
+def scrape_verify() -> None:
+    """Check that every ToC entry has both JP and EN clean text on disk."""
+    from translator.scraper.align import verify_pairs
+
+    PATHS.ensure()
+    report = verify_pairs()
+
+    table = Table(title="JP / EN parallel pair verification (numbered parts only)")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("In-scope entries (numbered parts)", str(report.in_scope_entries))
+    table.add_row("Out-of-scope (interludes / extras / SS / etc.)", str(report.out_of_scope_entries))
+    table.add_row("JP files present", str(report.jp_present))
+    table.add_row("EN files present", str(report.en_present))
+    table.add_row("Complete pairs", str(report.complete_pairs))
+    table.add_row("Missing JP (scrape failed)", str(len(report.missing_jp)))
+    table.add_row("Missing JP (LN-exclusive part, expected)", str(len(report.missing_jp_ln_only)))
+    table.add_row("Missing EN (scrape failed)", str(len(report.missing_en)))
+    table.add_row("Missing EN (JP-only tail, expected)", str(len(report.missing_en_jp_only)))
+    table.add_row("Paragraph-count skew >25%", str(len(report.paragraph_skew)))
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# prep
+# ---------------------------------------------------------------------------
+
+@prep_app.command("pov")
+def prep_pov(
+    pov: str | None = typer.Option(None, "--pov", help="Filter to a single POV."),
+) -> None:
+    """Print the POV breakdown of the corpus from data/metadata/toc.json."""
+    from translator.prep import load_pov_lookup
+
+    lookup = load_pov_lookup()
+    parts = lookup.parts_only()
+    counts: dict[str, int] = {}
+    for entry in parts:
+        counts[entry.pov] = counts.get(entry.pov, 0) + 1
+
+    table = Table(title=f"POV distribution ({len(parts)} numbered parts)")
+    table.add_column("POV")
+    table.add_column("Count", justify="right")
+    table.add_column("Share", justify="right")
+    for k in sorted(counts):
+        if pov and k != pov:
+            continue
+        share = counts[k] / max(len(parts), 1)
+        table.add_row(k, str(counts[k]), f"{share:.0%}")
+    console.print(table)
+
+
+@prep_app.command("calibrate")
+def prep_calibrate(
+    margin: float = typer.Option(
+        0.10, "--margin", help="Safety margin to widen the length-ratio band by."
+    ),
+) -> None:
+    """Fit validator thresholds to the observed corpus distribution.
+
+    Walks every translated pair, runs the three validators, and prints
+    a distribution summary plus recommended values for the loose
+    thresholds in `config.Thresholds`. Re-run after the corpus changes
+    materially.
+    """
+    from translator.prep import calibrate
+
+    report = calibrate()
+    if report.pair_count == 0:
+        console.print("[red]No translated pairs on disk — run `translator scrape jp/en` first.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[green]Calibrated against {report.pair_count} JP-EN pairs.[/green]\n")
+
+    lr = report.length_ratio
+    table = Table(title="EN/JP visible-character ratio")
+    table.add_column("statistic")
+    table.add_column("value", justify="right")
+    for label, value in [
+        ("n", lr.n),
+        ("mean", f"{lr.mean:.2f}"),
+        ("stdev", f"{lr.stdev:.2f}"),
+        ("min", f"{lr.minimum:.2f}"),
+        ("p05", f"{lr.p05:.2f}"),
+        ("p25", f"{lr.p25:.2f}"),
+        ("p50", f"{lr.p50:.2f}"),
+        ("p75", f"{lr.p75:.2f}"),
+        ("p95", f"{lr.p95:.2f}"),
+        ("max", f"{lr.maximum:.2f}"),
+    ]:
+        table.add_row(label, str(value))
+    console.print(table)
+
+    lo, hi = report.length_ratio_recommendation(margin=margin)
+    console.print(
+        f"[cyan]Recommended[/cyan]  length_ratio_min = {lo:.2f}  "
+        f"length_ratio_max = {hi:.2f}  "
+        f"(p05/p95 ± {margin:.0%} margin)\n"
+    )
+
+    ds = report.dialogue_skew
+    table = Table(title="Dialogue parity skew (|jp - en| / max)")
+    table.add_column("statistic")
+    table.add_column("value", justify="right")
+    for label, value in [
+        ("n", ds.n),
+        ("mean", f"{ds.mean:.3f}"),
+        ("p50", f"{ds.p50:.3f}"),
+        ("p75", f"{ds.p75:.3f}"),
+        ("p95", f"{ds.p95:.3f}"),
+        ("max", f"{ds.maximum:.3f}"),
+    ]:
+        table.add_row(label, str(value))
+    console.print(table)
+    console.print(
+        f"[cyan]Recommended[/cyan]  dialogue_parity_max_skew = "
+        f"{report.dialogue_skew_recommendation():.3f}  (p95)\n"
+    )
+
+    if report.name_skew_per_character:
+        table = Table(title="Name-frequency skew per character")
+        for col in ("character", "n", "mean", "p50", "p95", "max"):
+            table.add_column(col)
+        for name, dist in report.name_skew_per_character.items():
+            table.add_row(
+                name, str(dist.n),
+                f"{dist.mean:.2f}", f"{dist.p50:.2f}",
+                f"{dist.p95:.2f}", f"{dist.maximum:.2f}",
+            )
+        console.print(table)
+        console.print(
+            "[dim]name_frequency thresholds in checks.py are intentionally loose "
+            "(EN expands subject-elided JP). Tighten only if the p95 skew is "
+            "well below the current 25% warn / 50% fail bands.[/dim]"
+        )
+
+
+@prep_app.command("detect-pov")
+def prep_detect_pov(
+    write: bool = typer.Option(
+        True, "--write/--no-write", help="Persist resolved POVs to data/metadata/toc.json."
+    ),
+    only_needs_review: bool = typer.Option(
+        True,
+        "--only-needs-review/--all-parts",
+        help="Default: only re-detect parts marked needs_review (i.e. JP-only tail). "
+        "Use --all-parts to also re-detect EN-tagged parts.",
+    ),
+) -> None:
+    """Detect POV from the JP narrator for parts whose POV is uncertain.
+
+    Iterates ``data/parallel/*.jp.json`` for the targeted parts, counts
+    character mentions in narration only, and rewrites ``toc.json``
+    in place. The ``--all-parts`` flag is mainly useful as a sanity
+    check against EN-derived POV tags.
+    """
+    import json as _json
+
+    from translator.prep import detect_pov_from_disk
+    from translator.prep import load_pov_lookup
+    from translator.scraper.models import TocEntry
+
+    lookup = load_pov_lookup()
+    parts = lookup.parts_only(supported_pov_only=False)
+    targets = [
+        p for p in parts
+        if (not only_needs_review) or p.mapping_confidence == "needs_review"
+    ]
+    if not targets:
+        console.print("[yellow]No parts to detect (everything already settled).[/yellow]")
+        return
+
+    table = Table(title=f"POV detection ({len(targets)} parts)")
+    table.add_column("part")
+    table.add_column("仙台", justify="right")
+    table.add_column("宮城", justify="right")
+    table.add_column("from")
+    table.add_column("to")
+    table.add_column("confident")
+
+    updated: dict[str, TocEntry] = {}
+    skipped = 0
+    for entry in targets:
+        det = detect_pov_from_disk(entry.id)
+        if det is None or det.pov is None:
+            skipped += 1
+            table.add_row(
+                entry.id,
+                str(det.sendai_count) if det else "-",
+                str(det.miyagi_count) if det else "-",
+                entry.pov, entry.pov, "[yellow]no signal[/yellow]"
+            )
+            continue
+        new_entry = entry.model_copy(update={
+            "pov": det.pov,
+            "mapping_confidence": (
+                "auto" if det.confident else entry.mapping_confidence
+            ),
+        })
+        updated[entry.id] = new_entry
+        confidence_marker = "[green]yes[/green]" if det.confident else "[yellow]weak[/yellow]"
+        table.add_row(
+            entry.id,
+            str(det.sendai_count),
+            str(det.miyagi_count),
+            entry.pov, det.pov, confidence_marker,
+        )
+    console.print(table)
+    console.print(
+        f"[cyan]Resolved[/cyan]: {len(updated)}  [yellow]Skipped (no signal)[/yellow]: {skipped}"
+    )
+
+    if write and updated:
+        raw = _json.loads(PATHS.toc_json.read_text(encoding="utf-8"))
+        rows: list[dict] = []
+        for row in raw:
+            entry = TocEntry.model_validate(row)
+            new = updated.get(entry.id, entry)
+            rows.append(new.model_dump(mode="json"))
+        PATHS.toc_json.write_text(
+            _json.dumps(rows, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        console.print(f"[green]Wrote[/green] {PATHS.toc_json.relative_to(PATHS.repo_root)}")
+
+
+@prep_app.command("holdout")
+def prep_holdout(
+    target: int = typer.Option(THRESHOLDS.test_holdout_target_count, "--target", help="Target holdout size."),
+    seed: int = typer.Option(THRESHOLDS.random_seed, "--seed", help="RNG seed (deterministic across runs)."),
+    write: bool = typer.Option(True, "--write/--no-write", help="Persist to data/metadata/holdout.json."),
+) -> None:
+    """Build a stratified ~30-part test holdout, deterministic across runs."""
+    from translator.prep import build_holdout
+    from translator.prep.holdout import write_holdout
+
+    plan = build_holdout(target_count=target, seed=seed)
+    table = Table(title=f"Stratified holdout (n={len(plan.part_ids)}, seed={plan.seed})")
+    table.add_column("Bucket")
+    table.add_column("Miyagi", justify="right")
+    table.add_column("Sendai", justify="right")
+    for bucket in ("early", "mid", "late"):
+        cell = plan.per_bucket_counts.get(bucket, {})
+        table.add_row(bucket, str(cell.get("miyagi", 0)), str(cell.get("sendai", 0)))
+    console.print(table)
+    console.print("[dim]Members:[/dim] " + ", ".join(plan.part_ids))
+
+    if write:
+        write_holdout(plan)
+        console.print(
+            f"[green]Wrote[/green] {PATHS.holdout_json.relative_to(PATHS.repo_root)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# vault
+# ---------------------------------------------------------------------------
+
+@vault_app.command("init")
+def vault_init(
+    overwrite_templates: bool = typer.Option(
+        False, "--overwrite-templates", help="Forcibly rewrite prompt + comparison templates."
+    ),
+) -> None:
+    """Create knowledge-vault/ with the v3 directory layout and seed templates."""
+    from translator.vault import init_vault
+
+    root = init_vault(overwrite_templates=overwrite_templates)
+    console.print(f"[green]Vault ready at[/green] {root}")
+
+
+@vault_app.command("check")
+def vault_check_cmd(
+    part: str | None = typer.Option(None, "--part", help="Part id to dry-assemble a prompt for (defaults to first holdout member)."),
+) -> None:
+    """Offline pre-flight: verify vault, glossary, templates, and prompt assembly."""
+    from translator.vault.check import run_vault_check
+
+    sample = _normalize_part(part) if part else None
+    report = run_vault_check(sample_part=sample)
+    table = Table(title="knowledge-vault pre-flight (no API)")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("detail")
+    for c in report.checks:
+        color = "green" if c.ok else "red"
+        table.add_row(c.name, f"[{color}]{'pass' if c.ok else 'FAIL'}[/{color}]", c.detail)
+    console.print(table)
+    if not report.passed:
+        raise typer.Exit(1)
+
+
+@vault_app.command("status")
+def vault_status_cmd() -> None:
+    """Summarize the current vault contents (rules, deviations, evaluations)."""
+    from translator.vault import vault_status
+
+    s = vault_status()
+    table = Table(title="knowledge-vault status")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("root", str(s.root))
+    table.add_row("initialized", str(s.initialized))
+    table.add_row("active rules", str(s.active_rule_count))
+    table.add_row("candidate rules", str(s.candidate_rule_count))
+    table.add_row("pruned rules", str(s.pruned_rule_count))
+    table.add_row("inactive rules", str(s.inactive_rule_count))
+    table.add_row("deviation rounds", str(s.deviation_round_count))
+    table.add_row("deviation notes", str(s.deviation_note_count))
+    table.add_row("evaluation summaries", str(s.evaluation_round_count))
+    table.add_row("glossary present", str(s.glossary_present))
+    console.print(table)
+    if not s.initialized:
+        console.print("[yellow]Vault not initialized — run `translator vault init`.[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# glossary
+# ---------------------------------------------------------------------------
+
+@glossary_app.command("show")
+def glossary_show() -> None:
+    """Print the active glossary (vault if initialized, else seed)."""
+    from translator.glossary import format_for_prompt, load_glossary
+
+    entries = load_glossary()
+    if not entries:
+        console.print("[yellow]No glossary entries found.[/yellow]")
+        raise typer.Exit(0)
+    console.print(format_for_prompt(entries))
+    console.print(f"\n[dim]{len(entries)} entries.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# translate
+# ---------------------------------------------------------------------------
+
+@app.command("translate")
+def translate(
+    part: str = typer.Option(..., "--part", help="Part id (e.g. part_004) or part number."),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.translation."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Skip the network call; only assemble the prompt."),
+    no_holdout_skip: bool = typer.Option(False, "--no-holdout-skip", help="Don't skip holdout members in window."),
+) -> None:
+    """Translate one part end-to-end. Use --dry-run to inspect the prompt without API spend."""
+    from translator.inference import UnsupportedTargetError, translate_part
+
+    part_id = _normalize_part(part)
+    holdout_arg: object = ... if not no_holdout_skip else None
+    try:
+        result = translate_part(
+            part_id,
+            model=model,
+            dry_run=dry_run,
+            holdout=holdout_arg,
+        )
+    except UnsupportedTargetError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    table = Table(title=f"Translation: {part_id}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("model", result.model)
+    table.add_row("dry_run", str(result.dry_run))
+    table.add_row("template_source", result.prompt.template_source)
+    table.add_row("window parts", ", ".join(result.prompt.window_part_ids) or "(none)")
+    table.add_row("active rules", ", ".join(result.prompt.active_rule_ids) or "(none)")
+    if result.output_path:
+        table.add_row("output", str(result.output_path.relative_to(PATHS.repo_root)))
+    console.print(table)
+    for note in result.prompt.notes + result.notes:
+        console.print(f"[dim]note:[/dim] {note}")
+
+
+# ---------------------------------------------------------------------------
+# validate
+# ---------------------------------------------------------------------------
+
+@app.command("validate")
+def validate(
+    part: str = typer.Option(..., "--part", help="Part id or number."),
+    en_path: str | None = typer.Option(None, "--en", help="Override EN file path (defaults to data/output/{part}/translation.en.txt)."),
+) -> None:
+    """Run dialogue/name/length validators on a translation."""
+    from pathlib import Path
+
+    from translator.prep.corpus import load_part_jp
+    from translator.validation import validate_translation
+
+    part_id = _normalize_part(part)
+    jp = load_part_jp(part_id)
+    if en_path:
+        en = Path(en_path).read_text(encoding="utf-8")
+    else:
+        candidate = PATHS.output / part_id / "translation.en.txt"
+        if not candidate.exists():
+            console.print(f"[red]No translation found at {candidate}[/red]")
+            raise typer.Exit(1)
+        en = candidate.read_text(encoding="utf-8")
+
+    report = validate_translation(part_id, jp, en)
+    table = Table(title=f"Validation: {part_id} ({report.status})")
+    table.add_column("check")
+    table.add_column("status")
+    table.add_column("message")
+    for c in report.checks:
+        color = {"pass": "green", "warn": "yellow", "fail": "red"}[c.status]
+        table.add_row(c.name, f"[{color}]{c.status}[/{color}]", c.message)
+    console.print(table)
+    raise typer.Exit(0 if report.passed else 1)
+
+
+# ---------------------------------------------------------------------------
+# evaluate
+# ---------------------------------------------------------------------------
+
+@evaluate_app.command("deviations")
+def evaluate_deviations(
+    round_number: int = typer.Option(..., "--round", help="Round number (used in note frontmatter and folder name)."),
+    parts: str = typer.Option(..., "--parts", help="Comma-separated part ids (e.g. part_010,part_011) or 'holdout'."),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.comparison."),
+) -> None:
+    """Extract deviations for a batch and write per-chapter notes to the vault."""
+    from translator.eval import extract_deviations
+    from translator.prep.corpus import load_part_en, load_part_jp
+    from translator.prep.holdout import load_holdout
+
+    if parts.strip() == "holdout":
+        plan = load_holdout()
+        if plan is None:
+            console.print("[red]No holdout on disk; run `translator prep holdout` first.[/red]")
+            raise typer.Exit(1)
+        part_ids = list(plan.part_ids)
+    else:
+        part_ids = [p.strip() for p in parts.split(",") if p.strip()]
+
+    for pid in part_ids:
+        out_path = PATHS.output / pid / "translation.en.txt"
+        if not out_path.exists():
+            console.print(f"[yellow]skip {pid}: no translation at {out_path}[/yellow]")
+            continue
+        reference = load_part_en(pid)
+        if reference is None:
+            console.print(f"[yellow]skip {pid}: no reference translation[/yellow]")
+            continue
+        note = extract_deviations(
+            part_id=pid,
+            round_number=round_number,
+            jp=load_part_jp(pid),
+            llm_translation=out_path.read_text(encoding="utf-8"),
+            reference=reference,
+            model=model,
+        )
+        console.print(f"[green]{pid}[/green]: {len(note.deviations)} deviations recorded")
+
+
+@evaluate_app.command("cluster")
+def evaluate_cluster(
+    rounds: str = typer.Option(..., "--rounds", help="Comma-separated round numbers to read deviations from."),
+    promote_round: int = typer.Option(..., "--promote-round", help="Round number stamped on the new candidate rules."),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.clustering."),
+) -> None:
+    """Cluster deviation notes into candidate rules and write them to the vault."""
+    from translator.eval import cluster_into_candidate_rules
+
+    round_numbers = [int(r) for r in rounds.split(",") if r.strip()]
+    rules = cluster_into_candidate_rules(
+        round_numbers=round_numbers,
+        promote_round=promote_round,
+        model=model,
+    )
+    console.print(f"[green]Wrote {len(rules)} candidate rules.[/green]")
+
+
+@evaluate_app.command("score")
+def evaluate_score(
+    parts: str = typer.Option(..., "--parts", help="Comma-separated part ids or 'holdout'."),
+    skip_comet: bool = typer.Option(False, "--skip-comet", help="Skip COMET (still slow even on CPU)."),
+    skip_bertscore: bool = typer.Option(False, "--skip-bertscore", help="Skip BERTScore."),
+) -> None:
+    """COMET + BERTScore on (LLM, reference) pairs. Requires --extra ml."""
+    from translator.eval import bertscore, comet_score
+    from translator.prep.corpus import load_part_en, load_part_jp
+    from translator.prep.holdout import load_holdout
+
+    if parts.strip() == "holdout":
+        plan = load_holdout()
+        if plan is None:
+            console.print("[red]No holdout on disk; run `translator prep holdout` first.[/red]")
+            raise typer.Exit(1)
+        part_ids = list(plan.part_ids)
+    else:
+        part_ids = [p.strip() for p in parts.split(",") if p.strip()]
+
+    sources, hyps, refs = [], [], []
+    for pid in part_ids:
+        out_path = PATHS.output / pid / "translation.en.txt"
+        if not out_path.exists():
+            console.print(f"[yellow]skip {pid}: no translation[/yellow]")
+            continue
+        ref = load_part_en(pid)
+        if ref is None:
+            console.print(f"[yellow]skip {pid}: no reference[/yellow]")
+            continue
+        sources.append(load_part_jp(pid))
+        hyps.append(out_path.read_text(encoding="utf-8"))
+        refs.append(ref)
+    if not hyps:
+        console.print("[red]Nothing to score.[/red]")
+        raise typer.Exit(1)
+
+    table = Table(title=f"Scores ({len(hyps)} chapters)")
+    table.add_column("metric")
+    table.add_column("mean", justify="right")
+    if not skip_comet:
+        c = comet_score(sources=sources, hypotheses=hyps, references=refs)
+        table.add_row("COMET", f"{c.mean:.4f}")
+    if not skip_bertscore:
+        b = bertscore(hypotheses=hyps, references=refs)
+        table.add_row("BERTScore F1", f"{b.mean:.4f}")
+    console.print(table)
+
+
+@evaluate_app.command("judge")
+def evaluate_judge(
+    parts: str = typer.Option(..., "--parts", help="Comma-separated part ids or 'holdout'."),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.judge."),
+) -> None:
+    """LLM-as-judge rubric scoring per chapter."""
+    from translator.eval import judge_translation
+    from translator.prep.corpus import load_part_en, load_part_jp
+    from translator.prep.holdout import load_holdout
+    from translator.prep.pov import load_pov_lookup
+
+    if parts.strip() == "holdout":
+        plan = load_holdout()
+        if plan is None:
+            console.print("[red]No holdout on disk; run `translator prep holdout` first.[/red]")
+            raise typer.Exit(1)
+        part_ids = list(plan.part_ids)
+    else:
+        part_ids = [p.strip() for p in parts.split(",") if p.strip()]
+
+    lookup = load_pov_lookup()
+    table = Table(title="Judge ratings")
+    for col in ("part", "POV", "sem", "voice", "natural", "style", "mean"):
+        table.add_column(col)
+    for pid in part_ids:
+        out_path = PATHS.output / pid / "translation.en.txt"
+        if not out_path.exists():
+            continue
+        ref = load_part_en(pid)
+        if ref is None:
+            continue
+        result = judge_translation(
+            pov=lookup.pov(pid),
+            jp=load_part_jp(pid),
+            candidate=out_path.read_text(encoding="utf-8"),
+            reference=ref,
+            model=model,
+        )
+        table.add_row(
+            pid, lookup.pov(pid),
+            str(result.semantic_accuracy), str(result.voice_fidelity),
+            str(result.naturalness), str(result.style_match), f"{result.mean:.2f}",
+        )
+    console.print(table)
+
+
+@evaluate_app.command("report")
+def evaluate_report(
+    round_number: int = typer.Option(..., "--round", help="Round to summarize."),
+    notes: str = typer.Option("", "--notes", help="Free-form notes appended to the summary body."),
+) -> None:
+    """Write a knowledge-vault evaluation summary for the given round."""
+    from translator.eval import RoundSummary, write_round_summary
+    from translator.vault import vault_status
+
+    s = vault_status()
+    summary = RoundSummary(
+        round_number=round_number,
+        chapters_evaluated=0,
+        rules_active_total=s.active_rule_count,
+        notes=notes,
+    )
+    path = write_round_summary(summary)
+    console.print(f"[green]Wrote[/green] {path}")
+    console.print(
+        "[dim]Fill in metrics by editing the note in Obsidian, "
+        "or extend `evaluate report` to populate them automatically.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# info / helpers
+# ---------------------------------------------------------------------------
+
+@app.command("info")
+def info() -> None:
+    """Print resolved paths, model IDs, and source URLs."""
+    table = Table(title="ln-translator config")
+    table.add_column("key")
+    table.add_column("value")
+    table.add_row("repo_root", str(PATHS.repo_root))
+    table.add_row("data", str(PATHS.data))
+    table.add_row("knowledge_vault", str(PATHS.knowledge_vault))
+    table.add_row("kakuyomu_work", f"{SCRAPER.kakuyomu_base}/works/{SCRAPER.kakuyomu_work_id}")
+    table.add_row("avelilium_toc", SCRAPER.avelilium_toc_url)
+    table.add_row("MODELS.translation", MODELS.translation)
+    table.add_row("MODELS.comparison", MODELS.comparison)
+    table.add_row("MODELS.clustering", MODELS.clustering)
+    table.add_row("MODELS.judge", MODELS.judge)
+    table.add_row("THRESHOLDS.window_size", str(THRESHOLDS.window_size))
+    console.print(table)
+
+
+def _normalize_part(value: str) -> str:
+    """Accept ``part_004`` / ``4`` shorthand, and pass other ids through.
+
+    Numeric shorthand is convenient for the common case (numbered parts);
+    any other string is forwarded as-is so the downstream guard can
+    produce a clear "kind/POV not supported" error rather than a generic
+    parse failure.
+    """
+    value = value.strip()
+    try:
+        n = int(value)
+    except ValueError:
+        return value
+    return f"part_{n:03d}"
+
+
+def _print_kv_table(stats: dict, title: str) -> None:
+    table = Table(title=title)
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    for k, v in stats.items():
+        table.add_row(k, str(v))
+    console.print(table)
+
+
+if __name__ == "__main__":
+    app()

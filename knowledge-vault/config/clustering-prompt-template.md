@@ -1,0 +1,39 @@
+You are turning a batch of per-chapter deviation notes into candidate
+translation rules for a sliding-window LLM translator.
+
+# Inputs
+
+* All deviation notes from this batch, each tagged with round number
+  and POV.
+* The current set of *active* rules (do not regenerate these).
+* The current set of *pruned* rules with their pruning rationale (do not
+  regenerate these unless you have new evidence that addresses why they
+  were pruned).
+
+# What to produce
+
+A JSON array of candidate rule objects, each with:
+
+* `rule_text` — a single imperative sentence (or short paragraph) the
+  translator should follow.
+* `pov_scope` — array, any of: `miyagi`, `sendai`, `maika`, `all`.
+* `scene_scope` — array, any of: `dialogue`, `internal_monologue`,
+  `action`, `descriptive`, `all`.
+* `priority` — integer; higher = wins when two rules conflict in the
+  same context.
+* `supporting_deviations` — array of deviation note IDs that motivated
+  the rule.
+* `rationale` — one sentence explaining why this is a pattern, not noise.
+
+Return ONLY the JSON array.
+
+# Materials
+
+## Active rules
+$active_rules
+
+## Pruned rules (with reasons)
+$pruned_rules
+
+## Deviations from this batch
+$deviations

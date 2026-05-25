@@ -1,0 +1,50 @@
+{
+  "seed": 7,
+  "target_count": 30,
+  "part_ids": [
+    "part_001",
+    "part_019",
+    "part_031",
+    "part_034",
+    "part_041",
+    "part_052",
+    "part_053",
+    "part_080",
+    "part_098",
+    "part_103",
+    "part_163",
+    "part_164",
+    "part_168",
+    "part_216",
+    "part_217",
+    "part_226",
+    "part_238",
+    "part_252",
+    "part_255",
+    "part_275",
+    "part_283",
+    "part_286",
+    "part_302",
+    "part_316",
+    "part_360",
+    "part_375",
+    "part_390",
+    "part_392",
+    "part_398",
+    "part_399"
+  ],
+  "per_bucket_counts": {
+    "early": {
+      "miyagi": 5,
+      "sendai": 5
+    },
+    "mid": {
+      "miyagi": 5,
+      "sendai": 5
+    },
+    "late": {
+      "miyagi": 5,
+      "sendai": 5
+    }
+  }
+}

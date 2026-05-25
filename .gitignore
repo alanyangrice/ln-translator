@@ -1,0 +1,75 @@
+# Environment / secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+
+# uv
+.uv-cache/
+
+# Test / coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project data (large / regenerable / private)
+data/raw/
+data/parallel/
+data/output/
+data/models.json
+
+# Keep metadata under version control
+!data/metadata/
+
+# knowledge-vault content is intentionally tracked. Only ignore Obsidian's
+# per-user workspace state, not the notes themselves.
+knowledge-vault/.obsidian/workspace*
+knowledge-vault/.obsidian/cache
+knowledge-vault/.obsidian/plugins/*/data.json
+knowledge-vault/.trash/
+
+# Logs
+*.log
+
+# Jupyter
+.ipynb_checkpoints/

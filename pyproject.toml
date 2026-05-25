@@ -1,0 +1,78 @@
+[project]
+name = "ln-translator"
+version = "0.1.0"
+description = "JP-EN literary translation pipeline for 仙台さんは余計なことばかり言う (Sendai-san Always Says Such Unnecessary Things)."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "ln-translator contributors" }]
+dependencies = [
+    # CLI / config
+    "typer>=0.12.5",
+    "python-dotenv>=1.0.1",
+    "pydantic>=2.8.2",
+    "rich>=13.7.1",
+    "tqdm>=4.66.5",
+    # Scraping
+    "httpx>=0.27.2",
+    "beautifulsoup4>=4.12.3",
+    "lxml>=5.3.0",
+    "tenacity>=9.0.0",
+    # Text / JP tooling
+    "regex>=2024.9.11",
+    "tiktoken>=0.8.0",
+    # Vault: frontmatter Markdown notes
+    "python-frontmatter>=1.1.0",
+    # API clients
+    "openai>=1.50.0",
+    "anthropic>=0.34.0",
+]
+
+[project.optional-dependencies]
+# Heavy ML deps split out so the core CLI installs fast. Required only for
+# `translator evaluate score` (COMET + BERTScore).
+ml = [
+    "unbabel-comet>=2.2.4",
+    "bert-score>=0.3.13",
+    "fugashi[unidic-lite]>=1.3.2",
+]
+dev = [
+    "pytest>=8.3.3",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.6.9",
+    "mypy>=1.11.2",
+    "types-beautifulsoup4>=4.12.0",
+]
+
+[project.scripts]
+translator = "translator.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/translator"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests pass real ToC snippets through; the en-dash characters are intentional.
+"tests/*" = ["RUF001"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
+asyncio_mode = "auto"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+files = ["src"]
