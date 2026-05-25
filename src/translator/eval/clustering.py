@@ -28,11 +28,13 @@ from translator.vault.rules import Rule, load_rules_by_state
 from translator.vault.templates import CLUSTERING_TEMPLATE
 
 
-# Deviation IDs are formed by `vault.deviations.write_deviation_note` as
-# ``part-{chapter:03d}-r{round:02d}-d{idx}`` — extract the chapter number
-# so we can name rules by the part they were learned from rather than the
-# round they were proposed in.
-_DEVIATION_ID_RE = re.compile(r"part-(\d{3})-r\d+-d\d+", re.ASCII)
+# Deviation IDs are formed by ``vault.deviations.DeviationNote.deviation_id``
+# as ``part-{chapter:03d}-r{round:02d}-d{idx:02d}`` — extract the chapter
+# number so we can name rules by the part they were learned from rather
+# than the round they were proposed in. The optional ``ev`` accommodates
+# legacy clustering output that wrote ``-dev1`` instead of ``-d01`` before
+# the dev-id format was canonicalized.
+_DEVIATION_ID_RE = re.compile(r"part-(\d{3})-r\d+-d(?:ev)?\d+", re.ASCII)
 
 
 def _chapter_from_supporting(supporting: list[str]) -> str:

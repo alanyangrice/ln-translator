@@ -28,6 +28,7 @@ DeviationCategory = Literal[
     "formatting",
     "translationese",
     "style-rhythm",
+    "style-profile",
 ]
 Severity = Literal["minor", "major"]
 
@@ -72,6 +73,17 @@ class DeviationNote:
     def round_dir_name(self) -> str:
         return f"round-{self.round_number:02d}"
 
+    def deviation_id(self, idx: int) -> str:
+        """Return the canonical ID for the i-th deviation (1-indexed).
+
+        Format: ``part-{chapter:03d}-r{round:02d}-d{idx:02d}`` — e.g.
+        ``part-012-r01-d01``. The clustering step parses chapter numbers
+        out of this string to name candidate rules, so the format must
+        stay stable. Two-digit indices keep IDs sortable lexicographically.
+        """
+        chapter = self.part_id.removeprefix("part_")
+        return f"part-{chapter}-r{self.round_number:02d}-d{idx:02d}"
+
     def to_note(self) -> Note:
         meta: dict[str, Any] = {
             "part_id": self.part_id,
@@ -86,10 +98,12 @@ class DeviationNote:
         if not self.deviations:
             lines.append("_No deviations flagged._")
         for i, d in enumerate(self.deviations, 1):
+            dev_id = self.deviation_id(i)
             lines.extend(
                 [
-                    f"## Deviation {i}",
+                    f"## {dev_id}",
                     "",
+                    f"- **ID:** `{dev_id}`",
                     f"- **Category:** {d.category}",
                     f"- **Severity:** {d.severity}",
                     f"- **POV-specific:** {str(d.pov_specific).lower()}",

@@ -22,6 +22,7 @@ from translator.config import MODELS, REASONING
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.provider import complete
+from translator.style import format_style_profile_for_prompt
 from translator.vault import format_rules_for_prompt, load_active_rules
 
 JUDGE_PROMPT = """\
@@ -49,16 +50,25 @@ down even when the surface meaning is correct.
   patterns — expansive sentences with subordinating clauses, frequent
   contractions, dialogue tags cushioned with concurrent action, beat-
   and-then paragraph structure — rather than just producing "valid
-  English"? Violations of style-rhythm rules count AGAINST this axis.
+  English"? Violations of style-rhythm rules count AGAINST this axis,
+  and so does any clear divergence from the **style profile** below.
 
-# How to use the rules and glossary
+# How to use the rules, glossary, and style profile
 
-The active rules and glossary below were given to the candidate
-translator as ground truth. Use them as your standard for what
-"correct" means: a candidate that violates an active rule or glossary
-entry should not score above 3 on the corresponding axis. When you cite
-a problem in a rationale, mention the rule ID (e.g. "violates
-rule-000-06") so the rationale is actionable.
+The active rules, glossary, and style profile below were given to the
+candidate translator as ground truth. Use them as your standard for
+what "correct" means:
+
+* A candidate that violates an active rule or glossary entry should
+  not score above 3 on the corresponding axis. Cite the rule ID in
+  your rationale (e.g. "violates rule-000-06") so the feedback is
+  actionable.
+* The style profile defines the *target prose signature*. Where the
+  candidate diverges from a profile dimension that the reference
+  clearly demonstrates (e.g. profile says "frequent contractions in
+  narration" but the candidate uses formal forms), penalize
+  ``style_match``. Cite the dimension in your rationale (e.g.
+  "violates style profile §3 sentence structure").
 
 For each axis, write a one-sentence justification that calls out the
 most representative example from the candidate text and, if relevant,
@@ -78,6 +88,9 @@ $active_rules
 
 ## Glossary
 $glossary
+
+## Style profile
+$style_profile
 
 ## POV
 $pov
@@ -165,6 +178,7 @@ def judge_translation(
         reference=reference,
         active_rules=format_rules_for_prompt(rules),
         glossary=format_glossary_for_prompt(glossary_entries),
+        style_profile=format_style_profile_for_prompt(),
     )
     raw = complete(
         model=model,

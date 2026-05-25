@@ -16,6 +16,7 @@ from translator.config import PATHS, VAULT
 from translator.glossary import format_for_prompt, load_glossary
 from translator.inference.window import Window
 from translator.prep.corpus import Part, load_part
+from translator.style import format_style_profile_for_prompt, load_style_profile
 from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.templates import PROMPT_TEMPLATE
 
@@ -73,17 +74,23 @@ def assemble_prompt(
 
     rules = load_active_rules()
     glossary_entries = load_glossary()
+    style_profile = load_style_profile()
 
     new_part = target_part or load_part(target_part_id)
     notes = list(window.notes)
     if not glossary_entries:
         notes.append("glossary empty — running with no hard-constraint terms")
+    if not style_profile.has_content:
+        notes.append(
+            "style profile empty — run `translator style extract` to populate"
+        )
     if template_source == "in-code":
         notes.append("prompt template loaded from in-code default; vault not initialized")
 
     rendered = template.safe_substitute(
         rules=format_rules_for_prompt(rules),
         glossary=format_for_prompt(glossary_entries),
+        style_profile=format_style_profile_for_prompt(style_profile),
         reference_parts=_format_window(window),
         new_part_id=target_part_id,
         new_jp_chapter=new_part.jp_text.strip(),

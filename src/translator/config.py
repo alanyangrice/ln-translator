@@ -79,6 +79,11 @@ class VaultLayout:
     evaluations: str = "evaluations"
     glossary: str = "glossary"
     glossary_file: str = "glossary/glossary.md"
+    # Style profile is split across one Markdown file per dimension
+    # under ``style/`` (01-tone.md, 02-voice.md, …). The
+    # ``style_readme`` is a hand-edited overview in the same dir.
+    style: str = "style"
+    style_readme: str = "style/README.md"
     config: str = "config"
     prompt_template: str = "config/prompt-template.md"
     comparison_template: str = "config/comparison-prompt-template.md"
@@ -113,6 +118,11 @@ class Models:
     comparison: str = os.getenv("MODEL_COMPARISON", "gpt-5.5")
     clustering: str = os.getenv("MODEL_CLUSTERING", "gpt-5.5")
     judge: str = os.getenv("MODEL_JUDGE", "gpt-5.5")
+    # Style extraction is a one-shot characterization over a large EN
+    # corpus. gpt-5.5 with high reasoning is overkill for most chapters
+    # but justified here: the output is consumed by every subsequent
+    # translation, so we want the deepest analysis possible.
+    style_extraction: str = os.getenv("MODEL_STYLE_EXTRACTION", "gpt-5.5")
 
 
 MODELS = Models()
@@ -135,6 +145,7 @@ class ReasoningEffort:
     comparison: str = os.getenv("REASONING_EFFORT_COMPARISON", "high")
     clustering: str = os.getenv("REASONING_EFFORT_CLUSTERING", "medium")
     judge: str = os.getenv("REASONING_EFFORT_JUDGE", "high")
+    style_extraction: str = os.getenv("REASONING_EFFORT_STYLE_EXTRACTION", "high")
 
 
 REASONING = ReasoningEffort()

@@ -37,10 +37,18 @@ class VaultCheckReport:
 
 
 _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
-    VAULT.prompt_template: ("$rules", "$glossary", "$reference_parts", "$new_part_id", "$new_jp_chapter"),
+    VAULT.prompt_template: (
+        "$rules",
+        "$glossary",
+        "$style_profile",
+        "$reference_parts",
+        "$new_part_id",
+        "$new_jp_chapter",
+    ),
     VAULT.comparison_template: (
         "$active_rules",
         "$glossary",
+        "$style_profile",
         "$part_id",
         "$pov",
         "$jp_source",
@@ -86,6 +94,37 @@ def run_vault_check(*, sample_part: str | None = None) -> VaultCheckReport:
         len(entries) > 0,
         f"{len(entries)} entries",
     )
+
+    from translator.style import DIMENSIONS, load_style_profile
+
+    profile = load_style_profile()
+    style_dir = PATHS.knowledge_vault / VAULT.style
+    expected_dimensions = len(DIMENSIONS)
+    if not style_dir.exists():
+        report.add("style directory present", False, "missing — run `translator vault init`")
+    elif profile.has_content and profile.n_dimensions == expected_dimensions:
+        report.add(
+            "style profile extracted",
+            True,
+            (
+                f"{profile.n_dimensions}/{expected_dimensions} dimensions, "
+                f"through {profile.extracted_through or '?'}, "
+                f"{profile.n_chapters} chapters, "
+                f"model {profile.model or '?'}"
+            ),
+        )
+    elif profile.has_content:
+        report.add(
+            "style profile extracted",
+            False,
+            f"incomplete: only {profile.n_dimensions}/{expected_dimensions} dimensions on disk",
+        )
+    else:
+        report.add(
+            "style profile extracted",
+            False,
+            "no dimensions yet — run `translator style extract` to bootstrap (translation continues without it)",
+        )
 
     for template_key in _REQUIRED_TEMPLATE_PLACEHOLDERS:
         result = _check_template(template_key)

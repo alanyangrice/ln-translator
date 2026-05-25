@@ -19,6 +19,7 @@ from translator.vault.templates import (
     COMPARISON_TEMPLATE,
     GLOSSARY_SCAFFOLD,
     PROMPT_TEMPLATE,
+    STYLE_README,
     VAULT_README,
 )
 
@@ -68,6 +69,7 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
         VAULT.rules_inactive,
         VAULT.evaluations,
         VAULT.glossary,
+        VAULT.style,
         VAULT.config,
     ):
         (root / sub).mkdir(parents=True, exist_ok=True)
@@ -77,6 +79,7 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
         (root / VAULT.comparison_template, COMPARISON_TEMPLATE),
         (root / VAULT.clustering_template, CLUSTERING_TEMPLATE),
         (root / VAULT.glossary_file, GLOSSARY_SCAFFOLD),
+        (root / VAULT.style_readme, STYLE_README),
         (root / "README.md", VAULT_README),
     ]
     for path, contents in seeds:
@@ -85,6 +88,10 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
         if path.exists() and path.name == "README.md":
             continue
         path.write_text(contents, encoding="utf-8")
+
+    legacy_profile = root / VAULT.style / "profile.md"
+    if legacy_profile.exists():
+        legacy_profile.unlink()
 
     return root
 

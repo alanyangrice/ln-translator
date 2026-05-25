@@ -21,6 +21,16 @@ Below are recently translated chapters shown as Japanese-English pairs.
 Translate the new chapter at the end to match this translator's voice,
 style, and conventions exactly.
 
+# STYLE PROFILE (target — match this prose signature)
+
+The following profile characterizes the established human translator's
+prose along 16 dimensions. Treat it as the *target* your output should
+sound like, not a checklist to mechanically satisfy. The reference
+chapters below are the ground truth; the profile is a summary of what
+makes them sound the way they do.
+
+$style_profile
+
 # RULES (always follow these)
 
 $rules
@@ -56,11 +66,13 @@ You will receive:
 * The current set of **active rules** the LLM was supposed to follow.
 * The current **glossary** (hard-constraint term mappings the LLM was
   supposed to use).
+* The current **style profile** characterizing the reference
+  translator's prose along 16 dimensions.
 * The Japanese source.
 * The LLM's English output.
 * The human translator's English reference.
 
-# How to use the rules and glossary
+# How to use the rules, glossary, and style profile
 
 * **Treat the active rules as ground truth for what "correct" means.**
   If the LLM's rendering violates a rule, flag it with that rule's ID
@@ -69,6 +81,12 @@ You will receive:
 * **Treat glossary entries the same way.** If the LLM used a term that
   contradicts a glossary mapping (e.g. it wrote "muffler" when the
   glossary says マフラー → "scarf"), flag with `category: glossary`.
+* **Treat the style profile as the target signature** the LLM was
+  supposed to imitate. When the LLM output diverges from a profile
+  dimension that the reference clearly demonstrates (e.g. profile says
+  "frequent contractions in narration" but the LLM uses formal forms),
+  flag with `category: style-profile`. Cite the dimension number in
+  `notes` (e.g. "violates style profile §3 sentence structure").
 * **Don't propose new rules that duplicate existing active or pruned
   rules.** Just flag the violation; the clustering step decides whether
   to update the existing rule.
@@ -88,7 +106,8 @@ For each deviation, return a JSON object with these fields:
 
 * `category` — one of: `tense`, `voice/register`, `attribution`,
   `glossary`, `sentence-structure`, `omission`, `addition`, `idiom`,
-  `pronoun`, `formatting`, `translationese`, `style-rhythm`.
+  `pronoun`, `formatting`, `translationese`, `style-rhythm`,
+  `style-profile`.
 * `severity` — `minor` (stylistic) or `major` (semantic).
 * `pov_specific` — `true` if the deviation seems specific to this POV
   (Miyagi, Sendai, Maika), `false` if it's universal.
@@ -110,6 +129,9 @@ $active_rules
 
 ## Glossary
 $glossary
+
+## Style profile
+$style_profile
 
 ## Part ID
 $part_id
@@ -152,8 +174,11 @@ A JSON array of candidate rule objects, each with:
   `action`, `descriptive`, `all`.
 * `priority` — integer; higher = wins when two rules conflict in the
   same context.
-* `supporting_deviations` — array of deviation note IDs that motivated
-  the rule.
+* `supporting_deviations` — array of deviation IDs that motivated the
+  rule. **Use the IDs verbatim from the deviation note headers**, which
+  follow the format `part-XXX-rNN-dNN` (e.g. `part-012-r01-d03`). Do
+  not invent IDs; do not paraphrase. The chapter number in the ID is
+  used to name the resulting candidate rule, so accuracy matters.
 * `rationale` — one sentence explaining why this is a pattern, not noise.
 
 Return a JSON object of the form `{"rules": [...]}` containing the
@@ -186,6 +211,51 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | 宮城 | Miyagi | No honorific (Sendai POV) |
 | ピアス | earrings | — |
 | 「」 | 「」 | Preserve Japanese dialogue brackets |
+"""
+
+
+STYLE_README = """\
+# Style profile
+
+The reference translator's prose signature, characterized along 16
+dimensions. Each dimension lives in its own Markdown file in this
+directory (`01-tone.md`, `02-voice.md`, …) so it can be hand-edited,
+linked, or overridden independently. At prompt time the translator
+concatenates all dimension bodies in numerical order and injects them
+into the translation, comparison, and judge prompts via the
+`$style_profile` placeholder.
+
+## Bootstrap
+
+```
+translator style extract --through part_050
+```
+
+Reads the EN reference corpus through the named part (minus holdout
+members), runs the extraction model, and writes one file per
+dimension. Re-running overwrites all 16 files.
+
+## Dimensions
+
+1. Tone
+2. Voice
+3. Sentence structure
+4. Word choice
+5. Narrative distance
+6. Reader trust
+7. Internal monologue style
+8. Pacing
+9. Figurative language
+10. Dialogue integration
+11. Paragraph structure
+12. Repetition and motif
+13. Sensory emphasis
+14. Tense and temporal framing
+15. Connective tissue
+16. Character voice differentiation
+
+Until extraction has been run, the prompts will inject a placeholder
+notice and translation continues normally.
 """
 
 

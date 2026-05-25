@@ -17,6 +17,7 @@ from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.provider import complete
 from translator.prep.pov import POVLookup, load_pov_lookup
+from translator.style import format_style_profile_for_prompt
 from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.deviations import Deviation, DeviationNote, write_deviation_note
 from translator.vault.templates import COMPARISON_TEMPLATE
@@ -55,6 +56,7 @@ DEVIATIONS_JSON_SCHEMA: dict = {
                                 "formatting",
                                 "translationese",
                                 "style-rhythm",
+                                "style-profile",
                             ],
                         },
                         "severity": {"type": "string", "enum": ["minor", "major"]},
@@ -159,6 +161,7 @@ def extract_deviations(
         reference_translation=reference,
         active_rules=format_rules_for_prompt(rules),
         glossary=format_glossary_for_prompt(glossary_entries),
+        style_profile=format_style_profile_for_prompt(),
     )
     raw = complete(
         model=model,

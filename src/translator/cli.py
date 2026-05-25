@@ -6,6 +6,7 @@ Subcommand groups follow the v3 workflow:
     prep       POV lookup + stratified holdout selection
     vault      knowledge-vault init / status
     glossary   show / dump glossary
+    style      extract + inspect the writing-style profile
     translate  assemble prompt + translate one part (supports --dry-run)
     validate   run dialogue/name/length checks on an existing translation
     evaluate   self-evaluation loop (deviations, cluster, judge, score, report)
@@ -35,12 +36,14 @@ scrape_app = typer.Typer(no_args_is_help=True, help="Fetch JP and EN sources.")
 prep_app = typer.Typer(no_args_is_help=True, help="POV lookup + stratified holdout.")
 vault_app = typer.Typer(no_args_is_help=True, help="knowledge-vault init/status.")
 glossary_app = typer.Typer(no_args_is_help=True, help="View glossary entries.")
+style_app = typer.Typer(no_args_is_help=True, help="Extract / inspect the writing-style profile.")
 evaluate_app = typer.Typer(no_args_is_help=True, help="Self-evaluation loop.")
 
 app.add_typer(scrape_app, name="scrape")
 app.add_typer(prep_app, name="prep")
 app.add_typer(vault_app, name="vault")
 app.add_typer(glossary_app, name="glossary")
+app.add_typer(style_app, name="style")
 app.add_typer(evaluate_app, name="evaluate")
 
 console = Console()
@@ -471,6 +474,189 @@ def glossary_show() -> None:
         raise typer.Exit(0)
     console.print(format_for_prompt(entries))
     console.print(f"\n[dim]{len(entries)} entries.[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# style
+# ---------------------------------------------------------------------------
+
+@style_app.command("extract")
+def style_extract(
+    through: str = typer.Option(
+        "part_050",
+        "--through",
+        help="Highest part_id to include in the corpus (e.g. part_050 or just 50).",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override MODELS.style_extraction."
+    ),
+    include_holdout: bool = typer.Option(
+        False,
+        "--include-holdout",
+        help="Include holdout members in the extraction corpus (off by default to keep test set clean).",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print corpus stats and prompt size; do not call the model.",
+    ),
+    write: bool = typer.Option(
+        True,
+        "--write/--no-write",
+        help="Write per-dimension files under knowledge-vault/style/.",
+    ),
+) -> None:
+    """Extract a 16-dimension writing-style profile from the EN reference corpus.
+
+    One-shot bootstrap: reads parts 1..N (minus holdout by default), asks
+    the extraction model to characterize the prose along 16 dimensions,
+    and writes one file per dimension under knowledge-vault/style/.
+    Subsequent translation, deviation, and judge calls concatenate the
+    bodies and inject them via $style_profile.
+    """
+    from string import Template
+
+    from translator.config import MODELS, REASONING
+    from translator.style import write_style_dimensions
+    from translator.style.extract import (
+        EXTRACTION_PROMPT,
+        _format_corpus,
+        _gather_corpus,
+        extract_style_profile,
+    )
+
+    target_part_id = _normalize_part(through)
+    corpus, skipped_holdout = _gather_corpus(
+        through_part_id=target_part_id,
+        exclude_holdout=not include_holdout,
+    )
+    if not corpus:
+        console.print(
+            f"[red]No EN-translated parts found through {target_part_id}.[/red]"
+        )
+        raise typer.Exit(1)
+
+    table = Table(title="Style extraction plan")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("through", target_part_id)
+    table.add_row("chapters in corpus", str(len(corpus)))
+    table.add_row("holdout members skipped", str(skipped_holdout))
+    pov_counts: dict[str, int] = {}
+    for _, pov, _ in corpus:
+        pov_counts[pov] = pov_counts.get(pov, 0) + 1
+    table.add_row("by POV", ", ".join(f"{p}={n}" for p, n in sorted(pov_counts.items())))
+    chosen_model = model or MODELS.style_extraction
+    table.add_row("model", chosen_model)
+    table.add_row("reasoning effort", REASONING.style_extraction)
+    rendered_prompt = Template(EXTRACTION_PROMPT).safe_substitute(
+        corpus=_format_corpus(corpus)
+    )
+    table.add_row("prompt size", f"{len(rendered_prompt):,} chars")
+    console.print(table)
+
+    if dry_run:
+        console.print("[dim]dry-run: skipping model call[/dim]")
+        return
+
+    console.print("[dim]calling model — this can take several minutes for high-effort reasoning…[/dim]")
+    result = extract_style_profile(
+        through_part_id=target_part_id,
+        exclude_holdout=not include_holdout,
+        model=model,
+    )
+
+    if not write:
+        console.print(
+            f"[dim]--no-write set; parsed {len(result.dimensions)} dimensions[/dim]\n"
+        )
+        console.print(result.body)
+        return
+
+    paths = write_style_dimensions(
+        result.dimensions,
+        extracted_through=result.extracted_through,
+        n_chapters=result.n_chapters,
+        model=result.model,
+        extracted_at=result.extracted_at,
+    )
+    console.print(
+        f"[green]Wrote {len(paths)} dimension files[/green] "
+        f"({result.n_chapters} chapters, {len(result.body):,} chars total)"
+    )
+    for p in paths:
+        console.print(f"  • {p.relative_to(PATHS.repo_root)}")
+
+
+@style_app.command("show")
+def style_show(
+    full: bool = typer.Option(
+        False, "--full", help="Print the concatenated profile body instead of a summary."
+    ),
+    dimension: int | None = typer.Option(
+        None,
+        "--dimension",
+        "-d",
+        help="Print only the body of the given dimension number (1–16).",
+    ),
+) -> None:
+    """Display the current style profile and its provenance."""
+    from translator.style import DIMENSIONS, load_style_profile
+
+    profile = load_style_profile()
+    table = Table(title="Style profile")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row(
+        "directory",
+        str(profile.style_dir) if profile.style_dir else "(none)",
+    )
+    table.add_row("has content", str(profile.has_content))
+    table.add_row("dimensions on disk", f"{profile.n_dimensions}/{len(DIMENSIONS)}")
+    table.add_row("extracted_through", profile.extracted_through or "—")
+    table.add_row("n_chapters", str(profile.n_chapters))
+    table.add_row("extracted_at", profile.extracted_at or "—")
+    table.add_row("model", profile.model or "—")
+    table.add_row("version", str(profile.version))
+    console.print(table)
+
+    if profile.dimensions:
+        per_dim = Table(title="Dimensions on disk")
+        per_dim.add_column("#", justify="right")
+        per_dim.add_column("name")
+        per_dim.add_column("file")
+        per_dim.add_column("body chars", justify="right")
+        for d in sorted(profile.dimensions, key=lambda x: x.number):
+            per_dim.add_row(
+                str(d.number),
+                d.name,
+                d.filename,
+                f"{len(d.body):,}",
+            )
+        console.print(per_dim)
+
+    if dimension is not None:
+        match = next(
+            (d for d in profile.dimensions if d.number == dimension), None
+        )
+        if match is None:
+            console.print(
+                f"[yellow]Dimension {dimension} not on disk.[/yellow]"
+            )
+            return
+        console.print("\n---\n")
+        console.print(match.body)
+        return
+
+    if full and profile.has_content:
+        console.print("\n---\n")
+        console.print(profile.render_body())
+        return
+
+    if not profile.has_content:
+        console.print(
+            "[yellow]No dimensions extracted yet — run `translator style extract`.[/yellow]"
+        )
 
 
 # ---------------------------------------------------------------------------
