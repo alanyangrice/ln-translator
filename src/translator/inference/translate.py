@@ -345,10 +345,17 @@ def _write_output(
         # Stale artifact from a prior revised run on the same part.
         (out_dir / "draft_v1.en.txt").unlink()
     if critiques:
-        # Persist the most recent critique as critique.json (the
-        # decision-relevant one). Earlier rounds are kept in the
-        # ``meta.json`` summary; full payloads can be reproduced from
-        # the JSON-schema'd model output.
+        # Persist every round so the user can diff what the revise
+        # loop actually fixed. Naming mirrors ``draft_v1.en.txt`` →
+        # ``translation.en.txt``: ``critique_v{i+1}.json`` holds the
+        # audit of ``draft_v{i+1}``, and ``critique.json`` always
+        # holds the audit of the **final** translation (the last
+        # round). For a 1-revision run this means:
+        #   critique_v1.json  → audit of draft_v1 (round 0)
+        #   critique.json     → audit of the final translation
+        # For a no-revision run, both files contain the same audit.
+        for i, c in enumerate(critiques):
+            c.write(out_dir / f"critique_v{i + 1}.json")
         critiques[-1].write(out_dir / "critique.json")
     return out_dir
 

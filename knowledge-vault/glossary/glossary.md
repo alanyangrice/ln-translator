@@ -20,3 +20,4 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | 恋人 | lover / partner / someone (I'm) dating | Default to gender-neutral; only render as "boyfriend" / "girlfriend" when the source explicitly specifies (彼氏 / 彼女) |
 | お返し | a return gift / something in return | In White Day or gift-exchange contexts. Keep the reciprocal-gift specificity; do not flatten to vague "anything in return" |
 | 鉄分補給 | (an) iron supplement / topping up your iron | In the blood-drinking running gag. Natural supplement framing; never the literal "replenish your iron" |
+| クラス替え | changing classes / new class assignments / being put in different classes | The April school-year reshuffling. Never "class shuffling" or "class shuffle" (calque) |

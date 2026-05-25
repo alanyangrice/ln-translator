@@ -87,13 +87,24 @@ def _allocate(target_count: int) -> dict[str, dict[POV, int]]:
 
 
 def _filter_eligible(entries: Iterable[TocEntry]) -> list[TocEntry]:
-    """Keep only ``kind == part`` entries with both a part_number and a Miyagi/Sendai POV."""
+    """Keep only ``kind == part`` entries that can be evaluated.
+
+    Eligibility requires:
+
+    * ``kind == "part"`` — skips interludes/extras/side-stories.
+    * a numeric ``part_number`` — needed for bucket assignment.
+    * a Miyagi or Sendai POV — Maika is handled manually per the v3 doc.
+    * an EN reference file on disk — without one, COMET/BERTScore/judge can't
+      score the part. Parts in the untranslated tail (``part_230``+) fail
+      this check and are correctly excluded from the test set.
+    """
     return [
         e
         for e in entries
         if e.kind == "part"
         and e.part_number is not None
         and e.pov in ("miyagi", "sendai")
+        and (PATHS.parallel / f"{e.id}.en.txt").exists()
     ]
 
 
@@ -103,7 +114,13 @@ def build_holdout(
     seed: int | None = None,
     lookup: POVLookup | None = None,
 ) -> HoldoutPlan:
-    """Select a stratified holdout. Deterministic given ``seed``."""
+    """Select a stratified holdout. Deterministic given ``seed``.
+
+    The buckets are computed against the eligible (translated) range only, so
+    "early/mid/late" mean early/mid/late within the *parallel corpus*, not
+    within the full Kakuyomu work. This keeps the test set inside the range
+    where reference translations exist.
+    """
     target_count = target_count or THRESHOLDS.test_holdout_target_count
     seed = seed if seed is not None else THRESHOLDS.random_seed
     lookup = lookup or load_pov_lookup()
