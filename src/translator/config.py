@@ -43,6 +43,14 @@ class Paths:
     glossary_seed: Path = DATA_DIR / "metadata" / "glossary_seed.json"
     holdout_json: Path = DATA_DIR / "metadata" / "holdout.json"
     output: Path = DATA_DIR / "output"
+    # Precedent RAG index: JP↔EN paragraph pairs aligned by length-only
+    # DP plus the JP-side embeddings. Built once via ``translator
+    # precedents build`` and validated via ``translator precedents
+    # validate``; reused by every translation/revise/critique call.
+    # Lives inside the knowledge-vault because it's derived knowledge
+    # over the corpus (alongside rules, glossary, style profiles)
+    # rather than raw data.
+    precedent_index: Path = VAULT_DIR / "precedent-index"
 
     knowledge_vault: Path = VAULT_DIR
 
@@ -138,6 +146,12 @@ class Models:
     # the translator/critic blind spots stay diverse (Anthropic vs.
     # OpenAI).
     critic: str = os.getenv("MODEL_CRITIC", os.getenv("MODEL_COMPARISON", "gpt-5.5"))
+    # Cross-lingual embedding model used to align JP↔EN segments and
+    # to retrieve precedents at translation time. ``text-embedding-3-small``
+    # is multilingual, 1536-dim, and cheap enough that re-indexing the
+    # whole corpus costs ~$0.07. Bump to -large only if Phase 3
+    # validation shows the small model's recall is the bottleneck.
+    embedding: str = os.getenv("MODEL_EMBEDDING", "text-embedding-3-small")
 
 
 MODELS = Models()
@@ -236,6 +250,38 @@ class Thresholds:
     critique_revise_severity: str = "major"
     critique_revise_minor_threshold: int = 3
     critique_max_revisions: int = 1
+
+    # Precedent RAG knobs. Precedents are paragraph-level JP↔EN
+    # pairs aligned by length-only DP (no EN embedding). The
+    # retriever returns up to ``precedents_per_chapter`` paragraph
+    # pairs per target chapter (after dedup across queries). The
+    # per-query top-K caps how many neighbors each JP paragraph asks
+    # the index for before deduplicating.
+    #
+    # Defaults sized to ~4.5K tokens of injected context (~8% of a
+    # 60K-token translation prompt). Lower the per-chapter cap if
+    # prompt bloat becomes a problem; raise it if recall is the
+    # bottleneck.
+    precedents_per_chapter: int = 25
+    precedents_top_k_per_query: int = 3
+    # Drop stored precedents whose JP↔EN length-DP score is below
+    # this floor. Length-only alignment can lock onto an adjacent
+    # paragraph with a near-identical length but unrelated content;
+    # those entries embed correctly on the JP side but their EN
+    # field would mislead the LLM. ~14% of corpus entries fall below
+    # 0.3 — the corresponding JP queries still match good entries
+    # for the same content via the dedup-and-cap pipeline.
+    precedents_min_length_score: float = 0.3
+    # Cross-lingual JP↔EN cosine threshold (set by ``translator
+    # precedents validate``). Catches length-DP false positives the
+    # length filter alone can't see (e.g., adjacent paragraphs with
+    # similar character counts but different content). Calibrated
+    # against chapters with exact paragraph-count alignment: the 5th
+    # percentile of their cross-lingual cosine distribution is
+    # ~0.30, so anything below keeps 95% of true alignments while
+    # filtering the 5% of pairs that look semantically unrelated.
+    # Set to 0.0 to bypass this filter (e.g., before validate runs).
+    precedents_min_semantic_score: float = 0.3
 
 
 THRESHOLDS = Thresholds()

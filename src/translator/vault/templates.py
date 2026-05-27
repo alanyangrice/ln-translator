@@ -39,6 +39,17 @@ $rules
 
 $glossary
 
+# REFERENCE PRECEDENTS (canonical phrasings — imitate these)
+
+The translator's past renderings of structurally similar JP source.
+When the new chapter's phrasing matches one of these JP shapes, use the
+EN rendering as the canonical model rather than producing a literal
+translation. Sentence-level entries capture phrase-level patterns
+(idioms, verb-object pairings, noun-phrase choices); paragraph-window
+entries capture beat structure and dialogue rhythm.
+
+$reference_precedents
+
 ---
 
 $reference_parts
@@ -249,6 +260,9 @@ $glossary
 ## Style profile
 $style_profile
 
+## Reference precedents
+$reference_precedents
+
 ## Part ID
 $part_id
 
@@ -296,6 +310,15 @@ $rules
 # GLOSSARY (always follow these)
 
 $glossary
+
+# REFERENCE PRECEDENTS (canonical phrasings — imitate these)
+
+The translator's past renderings of structurally similar JP source.
+Lean on these especially when revising flagged spans: if a precedent
+covers the same JP shape, use the canonical EN phrasing rather than
+inventing a new one.
+
+$reference_precedents
 
 ---
 

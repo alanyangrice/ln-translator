@@ -38,6 +38,10 @@ vault_app = typer.Typer(no_args_is_help=True, help="knowledge-vault init/status.
 glossary_app = typer.Typer(no_args_is_help=True, help="View glossary entries.")
 style_app = typer.Typer(no_args_is_help=True, help="Extract / inspect the writing-style profile.")
 evaluate_app = typer.Typer(no_args_is_help=True, help="Self-evaluation loop.")
+precedents_app = typer.Typer(
+    no_args_is_help=True,
+    help="Build / inspect the precedent RAG index (JP↔EN parallel corpus).",
+)
 
 app.add_typer(scrape_app, name="scrape")
 app.add_typer(prep_app, name="prep")
@@ -45,6 +49,7 @@ app.add_typer(vault_app, name="vault")
 app.add_typer(glossary_app, name="glossary")
 app.add_typer(style_app, name="style")
 app.add_typer(evaluate_app, name="evaluate")
+app.add_typer(precedents_app, name="precedents")
 
 console = Console()
 
@@ -692,6 +697,32 @@ def translate(
         "--revise-minor-threshold",
         help="Minor flag count that triggers revision when no major flags fire.",
     ),
+    use_precedents: bool = typer.Option(
+        True,
+        "--precedents/--no-precedents",
+        help=(
+            "Inject paragraph-level reference precedents from the RAG index "
+            "into the translate / revise / critique prompts. Disable for "
+            "ablations or when the index hasn't been built yet."
+        ),
+    ),
+    precedent_k: int | None = typer.Option(
+        None,
+        "--precedent-k",
+        help=(
+            "Override THRESHOLDS.precedents_per_chapter for this run "
+            "(e.g. --precedent-k 50 to test a richer slate). Default "
+            "uses the configured value (25)."
+        ),
+    ),
+    output_suffix: str | None = typer.Option(
+        None,
+        "--output-suffix",
+        help=(
+            "Append a suffix to the output directory name (e.g. 'k50') "
+            "so ablation runs don't clobber each other."
+        ),
+    ),
 ) -> None:
     """Translate one part end-to-end with the inline critic + revise loop.
 
@@ -702,6 +733,18 @@ def translate(
     revise).
     """
     from translator.inference import UnsupportedTargetError, translate_part
+
+    # Apply --precedent-k as a runtime override on the shared
+    # THRESHOLDS dataclass for the duration of this call. The
+    # frozen=False dataclass allows mutation; we restore on exit so
+    # subsequent CLI invocations in the same process see the default.
+    original_k = THRESHOLDS.precedents_per_chapter
+    if precedent_k is not None:
+        object.__setattr__(THRESHOLDS, "precedents_per_chapter", precedent_k)
+        console.print(
+            f"[dim]ablation:[/dim] precedents_per_chapter={precedent_k} "
+            f"(default {original_k})"
+        )
 
     part_id = _normalize_part(part)
     holdout_arg: object = ... if not no_holdout_skip else None
@@ -716,10 +759,17 @@ def translate(
             max_revisions=max_revisions,
             revise_severity=revise_severity,  # type: ignore[arg-type]
             revise_minor_threshold=revise_minor_threshold,
+            use_precedents=use_precedents,
+            output_suffix=output_suffix,
         )
     except UnsupportedTargetError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(2) from exc
+    finally:
+        if precedent_k is not None:
+            object.__setattr__(
+                THRESHOLDS, "precedents_per_chapter", original_k
+            )
 
     table = Table(title=f"Translation: {part_id}")
     table.add_column("field")
@@ -729,6 +779,15 @@ def translate(
     table.add_row("template_source", result.prompt.template_source)
     table.add_row("window parts", ", ".join(result.prompt.window_part_ids) or "(none)")
     table.add_row("active rules", ", ".join(result.prompt.active_rule_ids) or "(none)")
+    if result.prompt.precedents is not None:
+        table.add_row(
+            "precedents",
+            f"{len(result.prompt.precedents.paragraphs)} paragraph pair(s)",
+        )
+    elif use_precedents:
+        table.add_row("precedents", "(no index built — skipped)")
+    else:
+        table.add_row("precedents", "(disabled via --no-precedents)")
     if result.critiques:
         table.add_row(
             "revision passes",
@@ -834,6 +893,11 @@ def evaluate_critique(
     parts: str = typer.Option(..., "--parts", help="Comma-separated part ids (or 'holdout')."),
     model: str | None = typer.Option(None, "--model", help="Override MODELS.critic."),
     show_flags: bool = typer.Option(False, "--show-flags", help="Print each flag's span + suggested rewrite."),
+    use_precedents: bool = typer.Option(
+        True,
+        "--precedents/--no-precedents",
+        help="Inject paragraph-level reference precedents into the critique prompt.",
+    ),
 ) -> None:
     """Run the inline critic on existing drafts without re-translating.
 
@@ -864,6 +928,7 @@ def evaluate_critique(
             jp=load_part_jp(pid),
             draft=draft_path.read_text(encoding="utf-8"),
             model=model,
+            use_precedents=use_precedents,
         )
         result.write()
         console.print(
@@ -1062,6 +1127,221 @@ def evaluate_report(
         "[dim]Fill in metrics by editing the note in Obsidian, "
         "or extend `evaluate report` to populate them automatically.[/dim]"
     )
+
+
+# ---------------------------------------------------------------------------
+# precedents (RAG index)
+# ---------------------------------------------------------------------------
+
+@precedents_app.command("build")
+def precedents_build(
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Discard the existing index and rebuild from scratch (else incremental).",
+    ),
+    only: str | None = typer.Option(
+        None,
+        "--only",
+        help="Comma-separated part ids to index (default: every translated part).",
+    ),
+    model: str | None = typer.Option(
+        None, "--model", help="Override MODELS.embedding (used only for the JP side)."
+    ),
+    progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Print one line per chapter as the build proceeds.",
+    ),
+    workers: int = typer.Option(
+        16,
+        "--workers",
+        help="Concurrent chapter workers (default 16).",
+    ),
+) -> None:
+    """Build (or extend) the precedent RAG index from the parallel corpus.
+
+    Reads every translated, supported-POV part by default; runs
+    length-only DP paragraph alignment (no EN embedding); embeds the
+    JP side with text-embedding-3-small; writes the result to
+    ``data/precedent_index/`` for retrieval at translation time.
+
+    The build is incremental: re-running adds any newly-translated
+    chapters. Pass ``--rebuild`` to wipe the index and start over (use
+    after changing the embedding model or the alignment constants).
+    """
+    from translator.precedents import build_index
+
+    only_ids = (
+        [_normalize_part(p) for p in only.split(",") if p.strip()] if only else None
+    )
+
+    stats = build_index(
+        parts=only_ids,
+        rebuild=rebuild,
+        model=model,
+        progress=progress,
+        workers=workers,
+    )
+
+    table = Table(title="Precedent index build")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("model", stats.model)
+    table.add_row("dim", str(stats.dim))
+    table.add_row("parts indexed (total)", str(len(stats.parts_indexed)))
+    table.add_row("parts skipped this run", str(len(stats.parts_skipped)))
+    for shape, count in sorted(stats.shape_counts.items()):
+        table.add_row(f"shape {shape}", str(count))
+    table.add_row("total entries", str(stats.total_count))
+    console.print(table)
+    if stats.parts_skipped:
+        console.print(
+            f"[dim]skipped:[/dim] {', '.join(stats.parts_skipped[:10])}"
+            + (" …" if len(stats.parts_skipped) > 10 else "")
+        )
+
+
+@precedents_app.command("query")
+def precedents_query(
+    part: str = typer.Option(..., "--part", help="Target part id or number."),
+    paragraph_k: int | None = typer.Option(
+        None,
+        "--paragraph-k",
+        help="Per-chapter cap on paragraph-level precedents (default config value).",
+    ),
+    exclude: str | None = typer.Option(
+        None,
+        "--exclude",
+        help="Comma-separated additional part ids to exclude (target is always excluded).",
+    ),
+) -> None:
+    """Debug retrieval: print what precedents would be injected for ``--part``.
+
+    Useful before/after a corpus change to confirm the new chapter pulls
+    sensible precedents.
+    """
+    from translator.precedents import format_precedents_for_prompt, retrieve_for_part
+
+    part_id = _normalize_part(part)
+    excluded = (
+        [_normalize_part(p) for p in exclude.split(",") if p.strip()] if exclude else None
+    )
+    result = retrieve_for_part(
+        part_id,
+        paragraph_k=paragraph_k,
+        exclude=excluded,
+    )
+
+    table = Table(title=f"Precedents for {part_id}")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("paragraph precedents", str(len(result.paragraphs)))
+    table.add_row("total", str(result.total))
+    console.print(table)
+    for note in result.notes:
+        console.print(f"[dim]note:[/dim] {note}")
+    body = format_precedents_for_prompt(result)
+    console.print("\n" + body)
+
+
+@precedents_app.command("stats")
+def precedents_stats() -> None:
+    """Print the current precedent index size, model, and provenance."""
+    from translator.precedents import index_exists, load_meta
+
+    if not index_exists():
+        console.print(
+            "[yellow]No precedent index found. Run "
+            "`translator precedents build` to populate it.[/yellow]"
+        )
+        raise typer.Exit(1)
+    meta = load_meta()
+    table = Table(title="Precedent index")
+    table.add_column("metric")
+    table.add_column("value")
+    table.add_row("model", str(meta.get("model", "?")))
+    table.add_row("dim", str(meta.get("dim", "?")))
+    for shape, count in sorted(meta.get("shape_counts", {}).items()):
+        table.add_row(f"shape {shape}", str(count))
+    table.add_row("parts indexed", str(len(meta.get("parts_indexed", []))))
+    table.add_row("length ratio", f"{meta.get('length_ratio', 0):.3f}")
+    table.add_row("length variance", f"{meta.get('length_var', 0):.2f}")
+    table.add_row("last updated", str(meta.get("last_updated", "?")))
+    if meta.get("validated_at"):
+        table.add_row("validated at", str(meta["validated_at"]))
+    console.print(table)
+
+
+@precedents_app.command("validate")
+def precedents_validate(
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Recompute semantic_score for every pair (else incremental).",
+    ),
+    workers: int = typer.Option(
+        8,
+        "--workers",
+        help="Concurrent embedding workers (default 8).",
+    ),
+    progress: bool = typer.Option(
+        True,
+        "--progress/--no-progress",
+        help="Print one line per batch as the pass proceeds.",
+    ),
+    show_suspects: bool = typer.Option(
+        True,
+        "--suspects/--no-suspects",
+        help=(
+            "Print the 5 worst suspect pairs (high length_score but low "
+            "semantic_score — typical length-DP false positives)."
+        ),
+    ),
+) -> None:
+    """Compute cross-lingual semantic_score for every indexed pair.
+
+    Length-only DP alignment can lock onto an adjacent paragraph with
+    a near-identical character count but different content. This
+    pass embeds the EN side of each pair, computes cosine similarity
+    against the stored JP embedding, and writes the result back into
+    ``pairs.jsonl`` as a ``semantic_score`` field. EN embeddings are
+    discarded after the pass — the retrieval hot path stays JP-only.
+
+    Calibration uses chapters where JP and EN paragraph counts match
+    exactly (alignment-correct by construction). The 5th percentile
+    of their semantic-score distribution is the recommended filter
+    threshold for the rest of the corpus.
+    """
+    from translator.precedents import validate_index
+
+    stats = validate_index(rebuild=rebuild, workers=workers, progress=progress)
+    table = Table(title="Precedent index validation")
+    table.add_column("metric")
+    table.add_column("value", justify="right")
+    table.add_row("pairs scored this run", str(stats.pairs_validated))
+    if stats.pairs_skipped:
+        table.add_row("pairs already validated", str(stats.pairs_skipped))
+    table.add_row("semantic_score median (corpus)", f"{stats.semantic_score_median:.3f}")
+    table.add_row("semantic_score mean (corpus)", f"{stats.semantic_score_mean:.3f}")
+    table.add_row("p25 / p10 / p05 (corpus)",
+        f"{stats.semantic_score_p25:.3f} / {stats.semantic_score_p10:.3f} / {stats.semantic_score_p05:.3f}")
+    table.add_row("calibration pairs (1:1 from exact-match chapters)", str(stats.calibration_pairs))
+    if stats.calibration_pairs:
+        table.add_row("calibration median", f"{stats.calibration_median:.3f}")
+        table.add_row("calibration mean", f"{stats.calibration_mean:.3f}")
+        table.add_row("calibration p05 (suggested threshold)", f"{stats.suggested_threshold:.3f}")
+    table.add_row("suspect pairs (length≥0.3 but semantic<p05)", str(stats.suspect_count))
+    console.print(table)
+    if show_suspects and stats.suspect_examples:
+        console.print("\n[bold]5 worst suspects:[/bold]")
+        for ex in stats.suspect_examples:
+            console.print(
+                f"  [{ex['part_id']}, {ex['shape']}] "
+                f"length={ex['length_score']:.2f} semantic={ex['semantic_score']:.2f}"
+            )
+            console.print(f"    JP: {ex['jp_text']}")
+            console.print(f"    EN: {ex['en_text']}")
 
 
 # ---------------------------------------------------------------------------

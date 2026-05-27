@@ -20,6 +20,10 @@ dependencies = [
     # Text / JP tooling
     "regex>=2024.9.11",
     "tiktoken>=0.8.0",
+    # Numerics for the precedent RAG index (cosine similarity, on-disk
+    # embedding matrix). Already a transitive dep via openai+httpx but
+    # we depend on it explicitly so the precedents package can import.
+    "numpy>=1.26.0",
     # Vault: frontmatter Markdown notes
     "python-frontmatter>=1.1.0",
     # API clients

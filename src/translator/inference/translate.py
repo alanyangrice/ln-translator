@@ -35,6 +35,11 @@ from translator.inference.prompt import AssembledPrompt, assemble_prompt
 from translator.inference.provider import complete, detect_provider
 from translator.inference.revise import revise_translation
 from translator.inference.window import Window, build_window
+from translator.precedents import (
+    RetrievalResult,
+    index_exists,
+    retrieve_for_part,
+)
 from translator.prep.holdout import HoldoutPlan, load_holdout
 from translator.prep.pov import POVLookup, load_pov_lookup
 from translator.scraper.models import POV, SUPPORTED_POVS
@@ -89,6 +94,8 @@ def translate_part(
     max_revisions: int | None = None,
     revise_severity: Literal["minor", "major"] | None = None,
     revise_minor_threshold: int | None = None,
+    use_precedents: bool = True,
+    output_suffix: str | None = None,
 ) -> TranslationResult:
     """Translate ``part_id`` end-to-end with optional critic + revision loop.
 
@@ -121,6 +128,14 @@ def translate_part(
         critic but never revises (audit-only mode).
     revise_severity / revise_minor_threshold
         Override the gating knobs in ``THRESHOLDS``.
+    use_precedents
+        If True (default), retrieve paragraph-level precedents from
+        the on-disk RAG index and inject them into the translate /
+        revise / critique prompts. Pass False for the
+        ``--no-precedents`` ablation or when the index hasn't been
+        built yet (the prompt assembler also auto-detects a missing
+        index, but this flag short-circuits the embedding round-trip
+        even earlier).
     """
     lookup = lookup or load_pov_lookup()
     entry = lookup.get(part_id)
@@ -143,7 +158,21 @@ def translate_part(
         holdout=holdout,  # type: ignore[arg-type]
         lookup=lookup,
     )
-    prompt = assemble_prompt(part_id, window)
+
+    # Retrieve precedents once and reuse across translate + revise +
+    # critique so the embedding round-trip is paid one time per
+    # chapter regardless of how many critic/revision rounds run.
+    precedents: RetrievalResult | None = None
+    fetch_precedents = use_precedents and not dry_run and index_exists()
+    if fetch_precedents:
+        precedents = retrieve_for_part(part_id)
+
+    prompt = assemble_prompt(
+        part_id,
+        window,
+        use_precedents=use_precedents,
+        precedents=precedents,
+    )
 
     model = model or MODELS.translation
     notes: list[str] = []
@@ -155,6 +184,14 @@ def translate_part(
     if not dry_run:
         provider = detect_provider(model)
         notes.append(f"calling {provider} with model={model}")
+        if fetch_precedents and precedents is not None:
+            notes.append(
+                f"precedents: {len(precedents.paragraphs)} paragraph pair(s) injected"
+            )
+        elif use_precedents:
+            notes.append("precedents: index not built; skipping retrieval")
+        else:
+            notes.append("precedents: disabled (--no-precedents)")
         # Literary chapters routinely exceed the provider default
         # (4K output tokens). The longest EN chapter in the corpus is
         # ~4.5K tokens, so 16K gives ~3.5× headroom and is well below
@@ -188,6 +225,8 @@ def translate_part(
                     else THRESHOLDS.critique_revise_minor_threshold
                 ),
                 lookup=lookup,
+                use_precedents=use_precedents,
+                precedents=precedents,
             )
             notes.extend(revision_notes)
 
@@ -202,6 +241,7 @@ def translate_part(
             revision_count=revision_count,
             model=model,
             dry_run=dry_run,
+            output_suffix=output_suffix,
         )
 
     return TranslationResult(
@@ -231,6 +271,8 @@ def _run_critique_revise_loop(
     severity_threshold: Literal["minor", "major"],
     minor_threshold: int,
     lookup: POVLookup,
+    use_precedents: bool = True,
+    precedents: RetrievalResult | None = None,
 ) -> tuple[str, list[CritiqueResult], int, list[str]]:
     """Run critic-then-revise iterations until clean or capped.
 
@@ -255,6 +297,8 @@ def _run_critique_revise_loop(
         draft=current_draft,
         model=critic_model,
         lookup=lookup,
+        use_precedents=use_precedents,
+        precedents=precedents,
     )
     critiques.append(critique)
     notes.append(
@@ -274,6 +318,8 @@ def _run_critique_revise_loop(
             previous_draft=current_draft,
             critique=critiques[-1],
             model=model,
+            use_precedents=use_precedents,
+            precedents=precedents,
         )
         revision_count += 1
         current_draft = revised
@@ -283,6 +329,8 @@ def _run_critique_revise_loop(
             draft=current_draft,
             model=critic_model,
             lookup=lookup,
+            use_precedents=use_precedents,
+            precedents=precedents,
         )
         critiques.append(next_critique)
         notes.append(
@@ -310,10 +358,18 @@ def _write_output(
     revision_count: int,
     model: str,
     dry_run: bool,
+    output_suffix: str | None = None,
 ) -> Path:
-    out_dir = PATHS.output / part_id
+    dir_name = part_id if not output_suffix else f"{part_id}-{output_suffix}"
+    out_dir = PATHS.output / dir_name
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "prompt.md").write_text(prompt.text, encoding="utf-8")
+    precedent_meta: dict | None = None
+    if prompt.precedents is not None:
+        precedent_meta = {
+            "paragraph_count": len(prompt.precedents.paragraphs),
+            "notes": list(prompt.precedents.notes),
+        }
     meta = {
         "target_part_id": part_id,
         "model": model,
@@ -323,6 +379,7 @@ def _write_output(
         "notes": prompt.notes,
         "template_source": prompt.template_source,
         "revision_count": revision_count,
+        "precedents": precedent_meta,
         "critic_rounds": [
             {
                 "round": i,

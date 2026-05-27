@@ -68,6 +68,12 @@ knowledge-vault/.obsidian/cache
 knowledge-vault/.obsidian/plugins/*/data.json
 knowledge-vault/.trash/
 
+# Precedent RAG index is fully regenerable from data/parallel/ in ~60s
+# (`translator precedents build && translator precedents validate`) and
+# the embeddings binary is ~160MB, too large for git. Treat as derived
+# artifact and rebuild on demand.
+knowledge-vault/precedent-index/
+
 # Logs
 *.log
 

@@ -36,6 +36,12 @@ from translator.glossary import load_glossary
 from translator.inference.prompt import _format_window
 from translator.inference.provider import complete, detect_provider
 from translator.inference.window import Window
+from translator.precedents import (
+    RetrievalResult,
+    format_precedents_for_prompt,
+    index_exists,
+    retrieve_for_part,
+)
 from translator.prep.corpus import Part, load_part
 from translator.style import format_style_profile_for_prompt, load_style_profile
 from translator.vault import format_rules_for_prompt, load_active_rules
@@ -52,6 +58,7 @@ class RevisedPrompt:
     active_rule_ids: list[str] = field(default_factory=list)
     n_flags: int = 0
     template_source: str = "in-code"
+    precedents: RetrievalResult | None = None
 
 
 def _load_revise_template() -> tuple[str, str]:
@@ -68,13 +75,20 @@ def assemble_revise_prompt(
     previous_draft: str,
     critique: CritiqueResult,
     target_part: Part | None = None,
+    use_precedents: bool = True,
+    precedents: RetrievalResult | None = None,
 ) -> RevisedPrompt:
     """Render the revision prompt for ``target_part_id``.
 
-    Same rules + glossary + style + window the first-pass prompt used,
-    plus the previous draft and the critic's flags. The translator
-    sees its own work and the specific spans to fix; we trust it to
-    produce a coherent rewrite that maintains the rest of the chapter.
+    Same rules + glossary + style + window + precedents the first-pass
+    prompt used, plus the previous draft and the critic's flags. The
+    translator sees its own work and the specific spans to fix; we
+    trust it to produce a coherent rewrite that maintains the rest of
+    the chapter.
+
+    ``use_precedents`` / ``precedents`` mirror :func:`assemble_prompt`:
+    pass a pre-fetched :class:`RetrievalResult` to reuse the
+    embedding round-trip from the first-pass call.
     """
     template_text, template_source = _load_revise_template()
     template = Template(template_text)
@@ -83,11 +97,15 @@ def assemble_revise_prompt(
     glossary_entries = load_glossary()
     style_profile = load_style_profile()
 
+    if precedents is None and use_precedents and index_exists():
+        precedents = retrieve_for_part(target_part_id)
+
     new_part = target_part or load_part(target_part_id)
     rendered = template.safe_substitute(
         rules=format_rules_for_prompt(rules),
         glossary=format_glossary_for_prompt(glossary_entries),
         style_profile=format_style_profile_for_prompt(style_profile),
+        reference_precedents=format_precedents_for_prompt(precedents),
         reference_parts=_format_window(window),
         new_part_id=target_part_id,
         new_jp_chapter=new_part.jp_text.strip(),
@@ -102,6 +120,7 @@ def assemble_revise_prompt(
         active_rule_ids=[r.id for r in rules],
         n_flags=len(critique.flags),
         template_source=template_source,
+        precedents=precedents,
     )
 
 
@@ -113,6 +132,8 @@ def revise_translation(
     critique: CritiqueResult,
     model: str | None = None,
     target_part: Part | None = None,
+    use_precedents: bool = True,
+    precedents: RetrievalResult | None = None,
 ) -> tuple[str, RevisedPrompt]:
     """Run the revision pass and return ``(revised_text, prompt_metadata)``.
 
@@ -126,6 +147,8 @@ def revise_translation(
         previous_draft=previous_draft,
         critique=critique,
         target_part=target_part,
+        use_precedents=use_precedents,
+        precedents=precedents,
     )
     chosen_model = model or MODELS.translation
     _provider = detect_provider(chosen_model)  # asserted by caller; logged via notes

@@ -41,6 +41,7 @@ _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
         "$rules",
         "$glossary",
         "$style_profile",
+        "$reference_precedents",
         "$reference_parts",
         "$new_part_id",
         "$new_jp_chapter",
@@ -60,6 +61,7 @@ _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
         "$active_rules",
         "$glossary",
         "$style_profile",
+        "$reference_precedents",
         "$part_id",
         "$pov",
         "$jp_source",
@@ -69,6 +71,7 @@ _REQUIRED_TEMPLATE_PLACEHOLDERS: dict[str, tuple[str, ...]] = {
         "$rules",
         "$glossary",
         "$style_profile",
+        "$reference_precedents",
         "$reference_parts",
         "$new_part_id",
         "$new_jp_chapter",
@@ -148,6 +151,35 @@ def run_vault_check(*, sample_part: str | None = None) -> VaultCheckReport:
     for template_key in _REQUIRED_TEMPLATE_PLACEHOLDERS:
         result = _check_template(template_key)
         report.add(f"template: {template_key}", result.ok, result.detail)
+
+    # Precedent RAG index. Translation continues without it (the
+    # placeholder degrades to a no-precedents notice), but a built
+    # index is the whole point of the RAG component.
+    from translator.precedents import index_exists, load_meta
+
+    if not index_exists():
+        report.add(
+            "precedent index built",
+            False,
+            "missing — run `translator precedents build` "
+            "(translation falls back to no-precedents placeholder until then)",
+        )
+    else:
+        meta = load_meta()
+        shape_counts = meta.get("shape_counts", {})
+        total = sum(int(c) for c in shape_counts.values())
+        parts_n = len(meta.get("parts_indexed", []))
+        ok = total > 0
+        shape_summary = ", ".join(
+            f"{count} {shape}" for shape, count in sorted(shape_counts.items())
+        )
+        detail = (
+            f"{parts_n} parts, {total} paragraph entries ({shape_summary}), "
+            f"model {meta.get('model', '?')}"
+        )
+        if not ok:
+            detail += " (empty — rebuild with `translator precedents build --rebuild`)"
+        report.add("precedent index built", ok, detail)
 
     active = load_active_rules()
     report.add(

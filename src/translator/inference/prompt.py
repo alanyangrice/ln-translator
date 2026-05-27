@@ -2,9 +2,17 @@
 
 Reads the canonical templates from the vault (or falls back to the
 in-code constants if the vault hasn't been initialized yet), substitutes
-the assembled window + active rules + glossary + new chapter, and
-returns an :class:`AssembledPrompt` carrying both the rendered text and
-metadata needed by the eval pipeline.
+the assembled window + active rules + glossary + reference precedents
++ new chapter, and returns an :class:`AssembledPrompt` carrying both
+the rendered text and metadata needed by the eval pipeline.
+
+Precedent retrieval is the only step here that may hit the network: it
+embeds the target chapter's JP queries against the on-disk index. The
+function gates this call behind ``use_precedents`` and ``index_exists``
+so dry-run / offline flows (vault check, tests) don't need a mock. Pre-
+fetched precedents can also be passed in via ``precedents=`` so the
+caller pays the embedding round-trip once and reuses the result across
+the first-pass + revise + critique calls.
 """
 
 from __future__ import annotations
@@ -15,6 +23,12 @@ from string import Template
 from translator.config import PATHS, VAULT
 from translator.glossary import format_for_prompt, load_glossary
 from translator.inference.window import Window
+from translator.precedents import (
+    RetrievalResult,
+    format_precedents_for_prompt,
+    index_exists,
+    retrieve_for_part,
+)
 from translator.prep.corpus import Part, load_part
 from translator.style import format_style_profile_for_prompt, load_style_profile
 from translator.vault import format_rules_for_prompt, load_active_rules
@@ -29,6 +43,11 @@ class AssembledPrompt:
     active_rule_ids: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     template_source: str = "in-code"  # "vault" if loaded from disk
+    # Precedents actually injected (for diff/inspection by the eval
+    # pipeline). ``None`` when retrieval was disabled or the index
+    # wasn't built; an empty result when retrieval ran but matched
+    # nothing.
+    precedents: RetrievalResult | None = None
 
 
 def _load_template() -> tuple[str, str]:
@@ -67,8 +86,26 @@ def assemble_prompt(
     window: Window,
     *,
     target_part: Part | None = None,
+    use_precedents: bool = True,
+    precedents: RetrievalResult | None = None,
 ) -> AssembledPrompt:
-    """Render the full translation prompt for ``target_part_id``."""
+    """Render the full translation prompt for ``target_part_id``.
+
+    Parameters
+    ----------
+    use_precedents
+        If True (default), retrieve precedents from the on-disk index
+        when one exists. If False, skip retrieval entirely and render
+        the no-precedents placeholder — used by ``--no-precedents``
+        ablations and by dry-run / vault-check paths that must stay
+        offline.
+    precedents
+        Pre-fetched :class:`RetrievalResult` to reuse instead of
+        re-querying the index. ``translate_part`` retrieves once and
+        passes the same result into the first-pass, revise, and
+        critique calls so the embedding round-trip isn't paid three
+        times for one chapter.
+    """
     template_text, template_source = _load_template()
     template = Template(template_text)
 
@@ -87,10 +124,22 @@ def assemble_prompt(
     if template_source == "in-code":
         notes.append("prompt template loaded from in-code default; vault not initialized")
 
+    if precedents is None and use_precedents:
+        if index_exists():
+            precedents = retrieve_for_part(target_part_id)
+            for n in precedents.notes:
+                notes.append(f"precedents: {n}")
+        else:
+            notes.append(
+                "precedents: index not built; "
+                "run `translator precedents build`"
+            )
+
     rendered = template.safe_substitute(
         rules=format_rules_for_prompt(rules),
         glossary=format_for_prompt(glossary_entries),
         style_profile=format_style_profile_for_prompt(style_profile),
+        reference_precedents=format_precedents_for_prompt(precedents),
         reference_parts=_format_window(window),
         new_part_id=target_part_id,
         new_jp_chapter=new_part.jp_text.strip(),
@@ -103,6 +152,7 @@ def assemble_prompt(
         active_rule_ids=[r.id for r in rules],
         notes=notes,
         template_source=template_source,
+        precedents=precedents,
     )
 
 

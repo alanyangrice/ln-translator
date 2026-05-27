@@ -19,6 +19,11 @@ You will receive:
 * The current **glossary** (hard-constraint term mappings).
 * The **style profile** characterizing the reference translator's prose
   along 16 dimensions.
+* **Reference precedents** — past JP→EN pairs from the corpus where the
+  JP source is structurally similar to passages in this chapter. Treat
+  the EN side as a high-signal model of how this translator handles
+  these JP shapes; flag draft spans that diverge from the precedent's
+  rendering when they share the same JP pattern.
 * The Japanese source.
 * The draft English translation to audit.
 
@@ -95,6 +100,9 @@ $glossary
 
 ## Style profile
 $style_profile
+
+## Reference precedents
+$reference_precedents
 
 ## Part ID
 $part_id

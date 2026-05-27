@@ -32,6 +32,12 @@ from translator.config import MODELS, PATHS, REASONING, VAULT
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.provider import complete
+from translator.precedents import (
+    RetrievalResult,
+    format_precedents_for_prompt,
+    index_exists,
+    retrieve_for_part,
+)
 from translator.prep.pov import POVLookup, load_pov_lookup
 from translator.style import format_style_profile_for_prompt
 from translator.vault import format_rules_for_prompt, load_active_rules
@@ -219,20 +225,28 @@ def critique_translation(
     draft: str,
     model: str | None = None,
     lookup: POVLookup | None = None,
+    use_precedents: bool = True,
+    precedents: RetrievalResult | None = None,
 ) -> CritiqueResult:
     """Audit ``draft`` for translationese / voice / style drift.
 
     The critic does **not** see the human reference — it judges the
     draft on its own merits, using the active rules + glossary + style
-    profile as the standard for "what good looks like." This is what
-    makes inline critique useful at inference time, when no reference
-    is available.
+    profile + reference precedents as the standard for "what good
+    looks like." This is what makes inline critique useful at
+    inference time, when no reference is available.
+
+    ``use_precedents`` / ``precedents`` mirror the translator
+    assemblers: pass a pre-fetched :class:`RetrievalResult` to share
+    one embedding round-trip across translate + revise + critique.
     """
     lookup = lookup or load_pov_lookup()
     pov = lookup.pov(part_id)
     chosen_model = model or MODELS.critic
     rules = load_active_rules()
     glossary_entries = load_glossary()
+    if precedents is None and use_precedents and index_exists():
+        precedents = retrieve_for_part(part_id)
     prompt = Template(_load_critique_template()).safe_substitute(
         part_id=part_id,
         pov=pov,
@@ -241,6 +255,7 @@ def critique_translation(
         active_rules=format_rules_for_prompt(rules),
         glossary=format_glossary_for_prompt(glossary_entries),
         style_profile=format_style_profile_for_prompt(),
+        reference_precedents=format_precedents_for_prompt(precedents),
     )
     raw = complete(
         model=chosen_model,

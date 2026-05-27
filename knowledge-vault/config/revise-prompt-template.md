@@ -31,6 +31,15 @@ $rules
 
 $glossary
 
+# REFERENCE PRECEDENTS (canonical phrasings — imitate these)
+
+The translator's past renderings of structurally similar JP source.
+Lean on these especially when revising flagged spans: if a precedent
+covers the same JP shape, use the canonical EN phrasing rather than
+inventing a new one.
+
+$reference_precedents
+
 ---
 
 $reference_parts
