@@ -89,7 +89,7 @@ def translate_part(
     write_output: bool = True,
     holdout: HoldoutPlan | None | object = ...,  # sentinel for "auto-load"
     lookup: POVLookup | None = None,
-    revise: bool = True,
+    revise: bool = False,
     critic_model: str | None = None,
     max_revisions: int | None = None,
     revise_severity: Literal["minor", "major"] | None = None,
@@ -117,10 +117,13 @@ def translate_part(
         the listed parts as window candidates, or the default sentinel
         which auto-loads ``data/metadata/holdout.json`` if present.
     revise
-        If True (default), run the inline critic after the first-pass
+        If True, run the inline critic after the first-pass
         translation and execute a revision pass when the configured
-        severity gate fires. Disable for cheap baseline runs or when
-        the critic is the thing under test.
+        severity gate fires. Disabled by default: with precedents at
+        k=150 the first-pass draft already adopts most of the
+        critic's suggested fixes, and the revision round triples the
+        per-chapter cost for marginal polish. Enable selectively when
+        you want a second pass on flagged chapters.
     critic_model
         Override ``MODELS.critic``. Useful for ablations.
     max_revisions

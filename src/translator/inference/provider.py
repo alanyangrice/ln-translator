@@ -24,6 +24,8 @@ Key design points:
 
 from __future__ import annotations
 
+import random
+import time
 from typing import Literal
 
 from translator.config import require_anthropic_key, require_openai_key
@@ -128,6 +130,11 @@ def _complete_openai(
     return text
 
 
+_ANTHROPIC_MAX_RETRIES = 6
+_ANTHROPIC_BASE_DELAY = 4.0
+_ANTHROPIC_MAX_DELAY = 120.0
+
+
 def _complete_anthropic(
     model: str,
     prompt: str,
@@ -137,7 +144,14 @@ def _complete_anthropic(
 ) -> str:
     import anthropic
 
-    client = anthropic.Anthropic(api_key=require_anthropic_key())
+    # The SDK's built-in retry caps at 2 attempts, which isn't enough
+    # for the sustained overload windows we hit on long Opus 4.7 runs.
+    # Use ``max_retries=0`` and drive the backoff loop ourselves so we
+    # can log progress and apply our own ceiling.
+    client = anthropic.Anthropic(
+        api_key=require_anthropic_key(),
+        max_retries=0,
+    )
     kwargs: dict = {
         "model": model,
         "max_tokens": max_tokens,
@@ -147,13 +161,47 @@ def _complete_anthropic(
         kwargs["temperature"] = temperature
     if system:
         kwargs["system"] = system
-    resp = client.messages.create(**kwargs)
-    parts: list[str] = []
-    for block in resp.content:
-        text = getattr(block, "text", None)
-        if text:
-            parts.append(text)
-    return "".join(parts)
+
+    last_exc: Exception | None = None
+    for attempt in range(_ANTHROPIC_MAX_RETRIES + 1):
+        try:
+            resp = client.messages.create(**kwargs)
+            parts: list[str] = []
+            for block in resp.content:
+                text = getattr(block, "text", None)
+                if text:
+                    parts.append(text)
+            return "".join(parts)
+        except (
+            anthropic.APIStatusError,
+            anthropic.APIConnectionError,
+            anthropic.APITimeoutError,
+        ) as exc:
+            last_exc = exc
+            # Retry on 408/429/5xx (overload, rate limit, transient
+            # server errors). Don't retry on 4xx that indicate a real
+            # programming bug.
+            status = getattr(exc, "status_code", None)
+            transient = (
+                isinstance(exc, anthropic.APIConnectionError | anthropic.APITimeoutError)
+                or status in {408, 409, 425, 429}
+                or (status is not None and 500 <= status < 600)
+            )
+            if not transient or attempt == _ANTHROPIC_MAX_RETRIES:
+                raise
+            # Exponential backoff with jitter, capped to keep wall
+            # time bounded even when the API is hard down.
+            delay = min(_ANTHROPIC_BASE_DELAY * (2**attempt), _ANTHROPIC_MAX_DELAY)
+            delay = delay * (0.75 + 0.5 * random.random())
+            print(
+                f"note: anthropic {type(exc).__name__} "
+                f"(status={status}); retrying in {delay:.1f}s "
+                f"(attempt {attempt + 1}/{_ANTHROPIC_MAX_RETRIES})"
+            )
+            time.sleep(delay)
+
+    assert last_exc is not None
+    raise last_exc
 
 
 def _anthropic_rejects_temperature(model: str) -> bool:

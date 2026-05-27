@@ -675,9 +675,15 @@ def translate(
     dry_run: bool = typer.Option(False, "--dry-run", help="Skip the network call; only assemble the prompt."),
     no_holdout_skip: bool = typer.Option(False, "--no-holdout-skip", help="Don't skip holdout members in window."),
     revise: bool = typer.Option(
-        True,
+        False,
         "--revise/--no-revise",
-        help="Run the inline critic + revision loop after the first-pass translation.",
+        help=(
+            "Run the inline critic + revision loop after the first-pass "
+            "translation. Default is off: with precedents at k=150 the "
+            "first-pass draft already adopts the vast majority of the "
+            "critic's suggested fixes, and the revision round costs an "
+            "extra ~$4 + ~6 min per chapter for marginal polish."
+        ),
     ),
     critic_model: str | None = typer.Option(
         None, "--critic-model", help="Override MODELS.critic."

@@ -258,11 +258,17 @@ class Thresholds:
     # per-query top-K caps how many neighbors each JP paragraph asks
     # the index for before deduplicating.
     #
-    # Defaults sized to ~4.5K tokens of injected context (~8% of a
-    # 60K-token translation prompt). Lower the per-chapter cap if
+    # Defaults sized to ~5K tokens of injected context (~6% of an
+    # 80K-token translation prompt). Lower the per-chapter cap if
     # prompt bloat becomes a problem; raise it if recall is the
     # bottleneck.
-    precedents_per_chapter: int = 25
+    #
+    # Ablation on part_230 (k = 25 / 50 / 75) showed that the critic
+    # flag count keeps trending down as k rises, while the precedent
+    # block stays well under 5% of the total prompt. The cost delta
+    # between k=25 and k=150 is ~$0.08 per chapter on Opus, which is
+    # not enough to justify a thinner reference shelf.
+    precedents_per_chapter: int = 150
     precedents_top_k_per_query: int = 3
     # Drop stored precedents whose JP↔EN length-DP score is below
     # this floor. Length-only alignment can lock onto an adjacent
