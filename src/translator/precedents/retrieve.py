@@ -12,6 +12,13 @@ For a target chapter (``part_NNN``):
 5. Return the top-K matches per query, dedupe across queries, cap by
    the per-chapter quota.
 
+When the v2 index (``knowledge-vault/precedent-index-v2``) exists,
+retrieval also runs a phrase-level pass: callers pass in a list of
+:class:`~translator.precedents.risk.RiskEntry` objects from the
+at-risk scanner, each flagged JP span is embedded, and the top-K
+matching phrase precedents from the v2 phrase index are returned
+alongside paragraph precedents.
+
 Holdout / self exclusion is enforced by ``part_id`` filter so the
 target chapter never retrieves its own precedents.
 
@@ -26,11 +33,15 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from translator.config import MODELS, PATHS, THRESHOLDS, require_openai_key
-from translator.precedents.align import split_jp_paragraphs
+from translator.precedents.legacy.align import split_jp_paragraphs
+
+if TYPE_CHECKING:
+    from translator.precedents.risk import RiskEntry
 
 
 @dataclass
@@ -50,25 +61,59 @@ class Precedent:
 
 
 @dataclass
+class PhrasePrecedent:
+    """One retrieved phrase-level precedent (v2 index only).
+
+    Unlike paragraph precedents, phrase precedents are surgical: they
+    cite a specific JP idiom and the human translator's rendering for
+    that idiom alone (not surrounding context). The ``query_jp`` field
+    records which at-risk span triggered this hit, so the prompt
+    renderer can group the precedents by the original risk.
+
+    ``query_literal_trap`` and ``query_category`` are copied from the
+    triggering :class:`RiskEntry` so the prompt renderer can show *the
+    risk's* trap (what the new chapter would translate to literally)
+    rather than the matched precedent's literal_alternative (which is
+    for a different surface form).
+    """
+
+    part_id: str
+    jp_span: str
+    en_span: str
+    category: str
+    literal_alternative: str
+    notes: str
+    context_jp: str
+    query_jp: str = ""
+    query_literal_trap: str = ""
+    query_category: str = ""
+    query_score: float = 0.0
+
+
+@dataclass
 class RetrievalResult:
-    """Bundle of paragraph-level precedents for a chapter."""
+    """Bundle of paragraph- and phrase-level precedents for a chapter."""
 
     part_id: str
     paragraphs: list[Precedent] = field(default_factory=list)
+    phrases: list[PhrasePrecedent] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # Index version that produced this result, for prompt provenance
+    # and downstream debugging.
+    index_version: str = "v1"
 
     @property
     def is_empty(self) -> bool:
-        return not self.paragraphs
+        return not self.paragraphs and not self.phrases
 
     @property
     def total(self) -> int:
-        return len(self.paragraphs)
+        return len(self.paragraphs) + len(self.phrases)
 
 
 @dataclass
 class _LoadedIndex:
-    """In-memory view of the on-disk index."""
+    """In-memory view of one on-disk index (single granularity)."""
 
     pairs: list[dict]
     embeddings: np.ndarray
@@ -81,7 +126,7 @@ def _index_paths(root: Path | None = None) -> tuple[Path, Path, Path]:
 
 
 def load_index(root: Path | None = None) -> _LoadedIndex | None:
-    """Load the on-disk index. Returns None if no index exists yet."""
+    """Load the v1 on-disk index. Returns None if no index exists yet."""
     pairs_path, emb_path, meta_path = _index_paths(root)
     if not (pairs_path.exists() and emb_path.exists() and meta_path.exists()):
         return None
@@ -95,6 +140,42 @@ def load_index(root: Path | None = None) -> _LoadedIndex | None:
     embeddings = np.load(emb_path)
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
     return _LoadedIndex(pairs=pairs, embeddings=embeddings, meta=meta)
+
+
+def _v2_granularity_paths(
+    root: Path, granularity: str
+) -> tuple[Path, Path, Path]:
+    base = root / granularity
+    return base / "pairs.jsonl", base / "embeddings.npy", base / "meta.json"
+
+
+def _load_v2_granularity(
+    root: Path, granularity: str
+) -> _LoadedIndex | None:
+    """Load one granularity (``"phrases"`` or ``"paragraphs"``) of the v2 index."""
+    pairs_path, emb_path, meta_path = _v2_granularity_paths(root, granularity)
+    if not (pairs_path.exists() and emb_path.exists() and meta_path.exists()):
+        return None
+    pairs: list[dict] = []
+    with pairs_path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                pairs.append(json.loads(line))
+    return _LoadedIndex(
+        pairs=pairs,
+        embeddings=np.load(emb_path),
+        meta=json.loads(meta_path.read_text(encoding="utf-8")),
+    )
+
+
+def v2_index_exists(root: Path | None = None) -> bool:
+    """Whether the v2 multi-granular index is built and loadable."""
+    base = root or PATHS.precedent_index_v2
+    return (
+        (base / "phrases" / "pairs.jsonl").exists()
+        and (base / "paragraphs" / "pairs.jsonl").exists()
+    )
 
 
 def _embed_queries(texts: list[str], model: str) -> np.ndarray:
@@ -179,6 +260,159 @@ def _topk_unique(
     return candidates
 
 
+def _retrieve_phrase_precedents_v2(
+    *,
+    risks: list["RiskEntry"],
+    phrase_index: _LoadedIndex,
+    excluded_parts: set[str],
+    model: str,
+    per_risk_k: int,
+    total_cap: int,
+    min_score: float,
+) -> tuple[list[PhrasePrecedent], list[str]]:
+    """Embed each at-risk JP span (with surrounding context for grounding)
+    and retrieve the top-K matching phrase precedents from the v2 index.
+    """
+    notes: list[str] = []
+    if not risks:
+        return [], notes
+
+    # Embed *just* the at-risk jp_span — the index was built from
+    # jp_span-only vectors, and concatenating context_jp was empirically
+    # shown to dilute the canonical-idiom signal (the top hit shifts
+    # from the exact match to a paragraph-level cosine match that
+    # happens to contain the same surface form in a different idiom).
+    # See `tests/precedents/test_retrieval_smoke.py` (or the design
+    # doc) for the head-to-head experiment.
+    query_texts = [r.jp_span for r in risks]
+    query_emb = _embed_queries(query_texts, model=model)
+    if query_emb.size == 0:
+        return [], notes
+
+    # Build eligibility mask (exclude self/holdout chapters).
+    elig_mask = np.array(
+        [p["part_id"] not in excluded_parts for p in phrase_index.pairs],
+        dtype=bool,
+    )
+    if not elig_mask.any():
+        notes.append("phrase index empty after holdout filter")
+        return [], notes
+
+    elig_idx = np.flatnonzero(elig_mask)
+    sub_emb = phrase_index.embeddings[elig_idx]
+    sims = query_emb @ sub_emb.T  # (Q, T')
+
+    seen_keys: set[tuple[str, str]] = set()
+    candidates: list[PhrasePrecedent] = []
+    for q, risk in enumerate(risks):
+        row = sims[q]
+        k = min(per_risk_k, row.shape[0])
+        if k <= 0:
+            continue
+        if k < row.shape[0]:
+            top_local = np.argpartition(-row, kth=k - 1)[:k]
+        else:
+            top_local = np.arange(row.shape[0])
+        top_local = top_local[np.argsort(-row[top_local])]
+        for local_idx in top_local:
+            score = float(row[local_idx])
+            if score < min_score:
+                break
+            absolute = int(elig_idx[local_idx])
+            rec = phrase_index.pairs[absolute]
+            key = (rec.get("jp_span", ""), rec.get("en_span", ""))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            candidates.append(
+                PhrasePrecedent(
+                    part_id=rec["part_id"],
+                    jp_span=rec.get("jp_span", ""),
+                    en_span=rec.get("en_span", ""),
+                    category=rec.get("category", "other"),
+                    literal_alternative=rec.get("literal_alternative", ""),
+                    notes=rec.get("notes", ""),
+                    context_jp=rec.get("context_jp", ""),
+                    query_jp=risk.jp_span,
+                    query_literal_trap=risk.literal_trap,
+                    query_category=risk.category,
+                    query_score=score,
+                )
+            )
+
+    # Cap the global volume across all risks. Keep highest-scoring.
+    if total_cap > 0 and len(candidates) > total_cap:
+        candidates.sort(key=lambda p: -p.query_score)
+        dropped = len(candidates) - total_cap
+        candidates = candidates[:total_cap]
+        notes.append(
+            f"capped phrase precedents at {total_cap} "
+            f"(dropped {dropped} lowest-scoring matches)"
+        )
+
+    return candidates, notes
+
+
+def _retrieve_paragraphs_v2(
+    *,
+    part_id: str,
+    paragraph_index: _LoadedIndex,
+    excluded_parts: set[str],
+    model: str,
+    per_query_k: int,
+    cap: int,
+) -> tuple[list[Precedent], list[str]]:
+    """Paragraph retrieval against the v2 index (no length/semantic filters
+    since v2 entries are LLM-extracted with quality gates instead).
+    """
+    from translator.prep.corpus import load_part_jp
+
+    notes: list[str] = []
+    jp_text = load_part_jp(part_id)
+    jp_paragraphs = split_jp_paragraphs(jp_text)
+    if not jp_paragraphs:
+        notes.append("target chapter produced no JP paragraphs after splitting")
+        return [], notes
+
+    query_emb = _embed_queries(
+        [p.text for p in jp_paragraphs], model=model
+    )
+
+    elig_mask = np.array(
+        [p["part_id"] not in excluded_parts for p in paragraph_index.pairs],
+        dtype=bool,
+    )
+    if not elig_mask.any():
+        notes.append("paragraph index empty after holdout filter")
+        return [], notes
+
+    hits = _topk_unique(
+        query_emb,
+        paragraph_index.embeddings,
+        paragraph_index.pairs,
+        target_part_filter=elig_mask,
+        per_query_k=per_query_k,
+        cap=cap,
+    )
+    out: list[Precedent] = []
+    for row, score in hits:
+        rec = paragraph_index.pairs[row]
+        out.append(
+            Precedent(
+                part_id=rec["part_id"],
+                shape=rec.get("shape", "1:1"),
+                jp_text=rec.get("jp_text", ""),
+                en_text=rec.get("en_text", ""),
+                # v2 entries have no length_score; report 1.0 so
+                # downstream rendering knows they passed the LLM
+                # quality gates.
+                length_score=1.0,
+                query_score=score,
+            )
+        )
+    return out, notes
+
+
 def retrieve_for_part(
     part_id: str,
     *,
@@ -189,50 +423,74 @@ def retrieve_for_part(
     exclude: Iterable[str] | None = None,
     model: str | None = None,
     root: Path | None = None,
+    risks: list["RiskEntry"] | None = None,
+    phrase_per_risk_k: int | None = None,
+    phrase_total_cap: int | None = None,
+    phrase_min_score: float | None = None,
 ) -> RetrievalResult:
-    """Retrieve paragraph-level precedents for ``part_id``.
+    """Retrieve precedents for ``part_id``.
+
+    Routes to the v2 multi-granular index (phrase + paragraph) when
+    available, falls back to v1 (length-DP paragraph only) otherwise.
 
     Parameters
     ----------
     part_id
         Target chapter id (e.g. ``"part_017"``).
     paragraph_k
-        Per-chapter cap (default :class:`Thresholds.precedents_per_chapter`).
+        Per-chapter paragraph cap (default
+        :class:`Thresholds.precedents_per_chapter`).
     per_query_k
-        How many neighbors each JP paragraph asks the index for
-        (default :class:`Thresholds.precedents_top_k_per_query`).
-    min_length_score
-        Drop precedents whose stored alignment length-score is below
-        this threshold. Length-only DP alignment occasionally locks
-        onto the wrong neighbor when two adjacent paragraphs have
-        similar lengths but different content; the resulting JP↔EN
-        pair has a low length score (poor length match) and is more
-        likely to mislead the LLM than help it. Default
-        :class:`Thresholds.precedents_min_length_score` (0.3) drops
-        the worst ~14% of entries while keeping high-confidence
-        alignments.
-    min_semantic_score
-        Drop precedents whose cross-lingual JP↔EN cosine
-        (``semantic_score`` written by ``translator precedents
-        validate``) is below this threshold. Catches the length-DP
-        false positives that ``length_score`` alone can't see —
-        adjacent paragraphs with similar character counts but
-        different content. Default
-        :class:`Thresholds.precedents_min_semantic_score` (0.4) is
-        the calibrated 5th-percentile of the chapters with exact
-        paragraph-count alignment. Pairs without a stored
-        ``semantic_score`` (i.e., index built before validate ran)
-        bypass this filter so the system stays usable before
-        validation completes.
+        How many paragraph neighbors each JP paragraph asks the index
+        for (default :class:`Thresholds.precedents_top_k_per_query`).
+    min_length_score, min_semantic_score
+        v1-only filters. Ignored when retrieving against v2 since v2
+        entries are LLM-extracted with quality gates instead of
+        length-DP scores.
     exclude
         Additional part ids to exclude from retrieval. The target
         ``part_id`` itself is **always** excluded so a chapter never
         retrieves its own precedents.
+    risks
+        v2-only. List of :class:`RiskEntry` from the at-risk scanner.
+        When provided, each risk's ``jp_span`` is used as a phrase-level
+        query against the v2 phrase index; results populate
+        ``RetrievalResult.phrases``. When None, no phrase retrieval runs.
+    phrase_per_risk_k, phrase_total_cap, phrase_min_score
+        v2-only knobs (default
+        :class:`Thresholds.phrase_precedents_per_risk` /
+        ``phrase_precedents_total_cap`` / ``phrase_precedents_min_score``).
     """
-    from translator.prep.corpus import load_part_jp
-
     cap = paragraph_k if paragraph_k is not None else THRESHOLDS.precedents_per_chapter
     pq_k = per_query_k if per_query_k is not None else THRESHOLDS.precedents_top_k_per_query
+    chosen_model = model or MODELS.embedding
+
+    excluded: set[str] = set(exclude or ())
+    excluded.add(part_id)
+
+    # ── v2 path ─────────────────────────────────────────────────
+    v2_root = root or PATHS.precedent_index_v2
+    if v2_index_exists(v2_root):
+        return _retrieve_for_part_v2(
+            part_id=part_id,
+            v2_root=v2_root,
+            excluded=excluded,
+            paragraph_k=cap,
+            per_query_k=pq_k,
+            phrase_per_risk_k=phrase_per_risk_k or THRESHOLDS.phrase_precedents_per_risk,
+            phrase_total_cap=phrase_total_cap or THRESHOLDS.phrase_precedents_total_cap,
+            phrase_min_score=(
+                phrase_min_score
+                if phrase_min_score is not None
+                else THRESHOLDS.phrase_precedents_min_score
+            ),
+            risks=risks,
+            model=chosen_model,
+        )
+
+    # ── v1 fallback ─────────────────────────────────────────────
+    from translator.prep.corpus import load_part_jp
+
     score_floor = (
         min_length_score
         if min_length_score is not None
@@ -243,10 +501,9 @@ def retrieve_for_part(
         if min_semantic_score is not None
         else THRESHOLDS.precedents_min_semantic_score
     )
-    chosen_model = model or MODELS.embedding
 
     notes: list[str] = []
-    result = RetrievalResult(part_id=part_id)
+    result = RetrievalResult(part_id=part_id, index_version="v1")
 
     index = load_index(root=root)
     if index is None:
@@ -265,9 +522,6 @@ def retrieve_for_part(
             f"index built with {index.meta['model']!r} but query model is "
             f"{chosen_model!r}; pin MODEL_EMBEDDING in .env or rebuild"
         )
-
-    excluded: set[str] = set(exclude or ())
-    excluded.add(part_id)
 
     def _eligible(p: dict) -> bool:
         if p["part_id"] in excluded:
@@ -361,9 +615,92 @@ def retrieve_for_part(
     return result
 
 
+def _retrieve_for_part_v2(
+    *,
+    part_id: str,
+    v2_root: Path,
+    excluded: set[str],
+    paragraph_k: int,
+    per_query_k: int,
+    phrase_per_risk_k: int,
+    phrase_total_cap: int,
+    phrase_min_score: float,
+    risks: list["RiskEntry"] | None,
+    model: str,
+) -> RetrievalResult:
+    """v2 multi-granular retrieval entry point. Phrase retrieval is
+    risk-driven (only runs when ``risks`` is provided)."""
+    notes: list[str] = []
+    result = RetrievalResult(part_id=part_id, index_version="v2")
+
+    paragraph_index = _load_v2_granularity(v2_root, "paragraphs")
+    phrase_index = _load_v2_granularity(v2_root, "phrases")
+
+    if paragraph_index is None and phrase_index is None:
+        notes.append("v2 index directory exists but neither granularity loaded")
+        result.notes = notes
+        return result
+
+    # Sanity-check embedding-model match (both granularities use the same).
+    for idx, label in (
+        (paragraph_index, "paragraph"),
+        (phrase_index, "phrase"),
+    ):
+        if idx and idx.meta.get("embedding_model") and idx.meta["embedding_model"] != model:
+            notes.append(
+                f"v2 {label} index built with {idx.meta['embedding_model']!r} "
+                f"but query model is {model!r}; pin MODEL_EMBEDDING or rebuild"
+            )
+
+    # ── paragraph pass ──────────────────────────────────────────
+    if paragraph_index is not None:
+        paragraphs, p_notes = _retrieve_paragraphs_v2(
+            part_id=part_id,
+            paragraph_index=paragraph_index,
+            excluded_parts=excluded,
+            model=model,
+            per_query_k=per_query_k,
+            cap=paragraph_k,
+        )
+        result.paragraphs = paragraphs
+        notes.extend(p_notes)
+    else:
+        notes.append("v2 paragraph index missing")
+
+    # ── phrase pass (only if risks were supplied) ──────────────
+    if risks and phrase_index is not None:
+        phrases, ph_notes = _retrieve_phrase_precedents_v2(
+            risks=risks,
+            phrase_index=phrase_index,
+            excluded_parts=excluded,
+            model=model,
+            per_risk_k=phrase_per_risk_k,
+            total_cap=phrase_total_cap,
+            min_score=phrase_min_score,
+        )
+        result.phrases = phrases
+        notes.extend(ph_notes)
+    elif risks and phrase_index is None:
+        notes.append("v2 phrase index missing")
+
+    if not result.paragraphs and not result.phrases:
+        notes.append("no v2 precedents matched")
+
+    result.notes = notes
+    return result
+
+
+def index_exists() -> bool:  # noqa: D401 - thin convenience
+    """Whether *some* precedent index (v1 or v2) is present and queryable."""
+    return v2_index_exists() or load_index() is not None
+
+
 __all__ = [
+    "PhrasePrecedent",
     "Precedent",
     "RetrievalResult",
+    "index_exists",
     "load_index",
     "retrieve_for_part",
+    "v2_index_exists",
 ]

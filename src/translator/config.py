@@ -43,7 +43,7 @@ class Paths:
     glossary_seed: Path = DATA_DIR / "metadata" / "glossary_seed.json"
     holdout_json: Path = DATA_DIR / "metadata" / "holdout.json"
     output: Path = DATA_DIR / "output"
-    # Precedent RAG index: JP↔EN paragraph pairs aligned by length-only
+    # Precedent RAG index v1: JP↔EN paragraph pairs aligned by length-only
     # DP plus the JP-side embeddings. Built once via ``translator
     # precedents build`` and validated via ``translator precedents
     # validate``; reused by every translation/revise/critique call.
@@ -51,6 +51,11 @@ class Paths:
     # over the corpus (alongside rules, glossary, style profiles)
     # rather than raw data.
     precedent_index: Path = VAULT_DIR / "precedent-index"
+    # Precedent RAG index v2: LLM-extracted multi-granular precedents
+    # (phrase + paragraph), all spans verified verbatim against source.
+    # Built via ``scripts/reindex_corpus_full.py`` (DeepSeek V4-Pro).
+    # When this directory exists, retrieval prefers it over v1.
+    precedent_index_v2: Path = VAULT_DIR / "precedent-index-v2"
 
     knowledge_vault: Path = VAULT_DIR
 
@@ -289,6 +294,26 @@ class Thresholds:
     # Set to 0.0 to bypass this filter (e.g., before validate runs).
     precedents_min_semantic_score: float = 0.3
 
+    # Phrase-level precedent retrieval (v2 index). The at-risk scanner
+    # identifies a list of risky JP phrases per chapter; for each one
+    # we query the phrase-level index for the top-K matching precedents.
+    # Defaults sized to roughly the same prompt budget as paragraphs.
+    #
+    # ``phrase_precedents_per_risk`` is the per-risk top-K (typically 3
+    # — one canonical match plus two adjacent renderings to show
+    # diversity).
+    # ``phrase_precedents_total_cap`` is the global ceiling per chapter
+    # so a chapter with 60 flagged risks doesn't generate 180 precedent
+    # blocks. Below the cap, all risks are honored; above, we keep the
+    # highest-scoring matches.
+    phrase_precedents_per_risk: int = 3
+    phrase_precedents_total_cap: int = 80
+    # Cosine similarity floor for phrase precedent matches. Phrase
+    # embeddings are short (10-30 chars) so their similarity scores
+    # are noisier than paragraph-level ones. 0.55 keeps high-confidence
+    # idiom matches while filtering out incidental lexical overlap.
+    phrase_precedents_min_score: float = 0.55
+
 
 THRESHOLDS = Thresholds()
 
@@ -319,6 +344,7 @@ SCRAPER = Scraper()
 class Secrets:
     openai_api_key: str = field(default_factory=lambda: os.getenv("OPENAI_API_KEY", ""))
     anthropic_api_key: str = field(default_factory=lambda: os.getenv("ANTHROPIC_API_KEY", ""))
+    deepseek_api_key: str = field(default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", ""))
 
 
 SECRETS = Secrets()
@@ -338,3 +364,12 @@ def require_anthropic_key() -> str:
             "ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill it in."
         )
     return SECRETS.anthropic_api_key
+
+
+def require_deepseek_key() -> str:
+    if not SECRETS.deepseek_api_key:
+        raise RuntimeError(
+            "DEEPSEEK_API_KEY is not set. Add it to .env (DeepSeek dashboard "
+            "→ API keys)."
+        )
+    return SECRETS.deepseek_api_key

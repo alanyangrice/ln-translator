@@ -165,15 +165,31 @@ def translate_part(
     # Retrieve precedents once and reuse across translate + revise +
     # critique so the embedding round-trip is paid one time per
     # chapter regardless of how many critic/revision rounds run.
+    # When the v2 index is in play, also run the at-risk scanner so
+    # phrase-level precedents can be retrieved for the flagged spans.
     precedents: RetrievalResult | None = None
     fetch_precedents = use_precedents and not dry_run and index_exists()
+    risks = None
     if fetch_precedents:
-        precedents = retrieve_for_part(part_id)
+        from translator.precedents import v2_index_exists
+
+        if v2_index_exists():
+            try:
+                from translator.precedents.risk import scan_chapter
+
+                risks_result = scan_chapter(part_id)
+                risks = risks_result.risks
+            except Exception:  # pylint: disable=broad-except
+                risks = None
+        precedents = retrieve_for_part(part_id, risks=risks)
 
     prompt = assemble_prompt(
         part_id,
         window,
         use_precedents=use_precedents,
+        # Already fetched precedents above (with risks if v2);
+        # assemble_prompt should not re-scan or re-retrieve.
+        use_risk_scan=False,
         precedents=precedents,
     )
 
@@ -188,8 +204,15 @@ def translate_part(
         provider = detect_provider(model)
         notes.append(f"calling {provider} with model={model}")
         if fetch_precedents and precedents is not None:
+            phrase_count = len(precedents.phrases)
+            para_count = len(precedents.paragraphs)
+            risk_count = len(risks) if risks else 0
+            tag = f"v{precedents.index_version[1:]}" if precedents.index_version else "v1"
             notes.append(
-                f"precedents: {len(precedents.paragraphs)} paragraph pair(s) injected"
+                f"precedents [{precedents.index_version}]: "
+                f"{phrase_count} phrase + {para_count} paragraph pair(s) "
+                f"injected"
+                + (f" (risk scan flagged {risk_count})" if risk_count else "")
             )
         elif use_precedents:
             notes.append("precedents: index not built; skipping retrieval")

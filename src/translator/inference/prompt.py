@@ -87,6 +87,7 @@ def assemble_prompt(
     *,
     target_part: Part | None = None,
     use_precedents: bool = True,
+    use_risk_scan: bool = True,
     precedents: RetrievalResult | None = None,
 ) -> AssembledPrompt:
     """Render the full translation prompt for ``target_part_id``.
@@ -99,6 +100,12 @@ def assemble_prompt(
         the no-precedents placeholder — used by ``--no-precedents``
         ablations and by dry-run / vault-check paths that must stay
         offline.
+    use_risk_scan
+        If True (default), and the v2 index is built, run the at-risk
+        scanner on the target chapter so phrase-level precedents can
+        be retrieved. The scan is cached per-chapter so first call
+        pays the LLM round-trip (~3 min on Sonnet) and subsequent
+        calls are instant.
     precedents
         Pre-fetched :class:`RetrievalResult` to reuse instead of
         re-querying the index. ``translate_part`` retrieves once and
@@ -126,7 +133,27 @@ def assemble_prompt(
 
     if precedents is None and use_precedents:
         if index_exists():
-            precedents = retrieve_for_part(target_part_id)
+            risks = None
+            if use_risk_scan:
+                from translator.precedents import v2_index_exists
+
+                if v2_index_exists():
+                    from translator.precedents.risk import scan_chapter
+
+                    try:
+                        risks_result = scan_chapter(target_part_id)
+                        risks = risks_result.risks
+                        notes.append(
+                            f"precedents: at-risk scan flagged "
+                            f"{len(risks)} JP span(s) for phrase retrieval"
+                        )
+                    except Exception as exc:  # pylint: disable=broad-except
+                        notes.append(
+                            f"precedents: at-risk scan failed "
+                            f"({type(exc).__name__}: {exc}); falling back "
+                            "to paragraph-only retrieval"
+                        )
+            precedents = retrieve_for_part(target_part_id, risks=risks)
             for n in precedents.notes:
                 notes.append(f"precedents: {n}")
         else:

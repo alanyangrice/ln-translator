@@ -24,24 +24,27 @@ Storage layout is documented in :mod:`translator.precedents.index`.
 from __future__ import annotations
 
 from translator.precedents.format import format_precedents_for_prompt
-from translator.precedents.index import (
+from translator.precedents.legacy.index import (
     IndexEntry,
     IndexStats,
     build_index,
-    index_exists,
     load_meta,
 )
+from translator.precedents.legacy.validate import ValidationStats, validate_index
 from translator.precedents.retrieve import (
+    PhrasePrecedent,
     Precedent,
     RetrievalResult,
+    index_exists,
     load_index,
     retrieve_for_part,
+    v2_index_exists,
 )
-from translator.precedents.validate import ValidationStats, validate_index
 
 __all__ = [
     "IndexEntry",
     "IndexStats",
+    "PhrasePrecedent",
     "Precedent",
     "RetrievalResult",
     "ValidationStats",
@@ -51,5 +54,6 @@ __all__ = [
     "load_index",
     "load_meta",
     "retrieve_for_part",
+    "v2_index_exists",
     "validate_index",
 ]
