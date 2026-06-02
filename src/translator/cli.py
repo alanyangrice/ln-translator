@@ -19,6 +19,7 @@ API keys; ``translate --dry-run`` and ``validate`` work without them.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -42,6 +43,13 @@ precedents_app = typer.Typer(
     no_args_is_help=True,
     help="Build / inspect the precedent RAG index (JP↔EN parallel corpus).",
 )
+ai_ref_app = typer.Typer(
+    no_args_is_help=True,
+    help=(
+        "Manage the AI-references manifest used to extend the sliding "
+        "window past the human-translated range."
+    ),
+)
 
 app.add_typer(scrape_app, name="scrape")
 app.add_typer(prep_app, name="prep")
@@ -50,6 +58,7 @@ app.add_typer(glossary_app, name="glossary")
 app.add_typer(style_app, name="style")
 app.add_typer(evaluate_app, name="evaluate")
 app.add_typer(precedents_app, name="precedents")
+app.add_typer(ai_ref_app, name="ai-ref")
 
 console = Console()
 
@@ -729,6 +738,46 @@ def translate(
             "so ablation runs don't clobber each other."
         ),
     ),
+    ai_reference: list[str] = typer.Option(
+        [],
+        "--ai-reference",
+        help=(
+            "Append an AI-translated chapter to the sliding window "
+            "(for translating chapters past the human-translated range). "
+            "Format: PART_ID=PATH/TO/translation.en.txt. May be specified "
+            "multiple times. Renders in the prompt with an explicit "
+            "AI-TRANSLATED warning so the model uses it for plot "
+            "continuity only, not as a style anchor. Stacks with auto "
+            "manifest loading; explicit entries take priority."
+        ),
+    ),
+    auto_ai_references: bool = typer.Option(
+        True,
+        "--auto-ai-references/--no-auto-ai-references",
+        help=(
+            "Auto-append the most-recent N AI-translated chapters from "
+            "the manifest at knowledge-vault/ai-references.json "
+            "(promoted via `translator ai-ref promote`). N is capped by "
+            "THRESHOLDS.ai_reference_window_size (default 10). Disable "
+            "for ablations or to translate without AI continuity."
+        ),
+    ),
+    ai_reference_limit: int | None = typer.Option(
+        None,
+        "--ai-reference-limit",
+        help=(
+            "Override THRESHOLDS.ai_reference_window_size (default 10) "
+            "for this run. Useful to test smaller AI-reference windows."
+        ),
+    ),
+    risk_model: str | None = typer.Option(
+        None,
+        "--risk-model",
+        help=(
+            "Override the at-risk scanner model (default deepseek-v4-pro). "
+            "Cache is scoped by model so swapping doesn't reuse stale scans."
+        ),
+    ),
 ) -> None:
     """Translate one part end-to-end with the inline critic + revise loop.
 
@@ -754,6 +803,24 @@ def translate(
 
     part_id = _normalize_part(part)
     holdout_arg: object = ... if not no_holdout_skip else None
+
+    ai_references: list[tuple[str, Path]] = []
+    for spec in ai_reference or ():
+        if "=" not in spec:
+            console.print(
+                f"[red]--ai-reference expected PART_ID=PATH, got: {spec!r}[/red]"
+            )
+            raise typer.Exit(2)
+        ai_part, ai_path_str = spec.split("=", 1)
+        ai_part = ai_part.strip()
+        ai_path = Path(ai_path_str.strip())
+        if not ai_path.exists():
+            console.print(
+                f"[red]--ai-reference file not found: {ai_path}[/red]"
+            )
+            raise typer.Exit(2)
+        ai_references.append((_normalize_part(ai_part), ai_path))
+
     try:
         result = translate_part(
             part_id,
@@ -767,6 +834,10 @@ def translate(
             revise_minor_threshold=revise_minor_threshold,
             use_precedents=use_precedents,
             output_suffix=output_suffix,
+            ai_references=ai_references or None,
+            auto_ai_references=auto_ai_references,
+            ai_reference_limit=ai_reference_limit,
+            risk_model=risk_model,
         )
     except UnsupportedTargetError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -859,8 +930,36 @@ def evaluate_deviations(
     round_number: int = typer.Option(..., "--round", help="Round number (used in note frontmatter and folder name)."),
     parts: str = typer.Option(..., "--parts", help="Comma-separated part ids (e.g. part_010,part_011) or 'holdout'."),
     model: str | None = typer.Option(None, "--model", help="Override MODELS.comparison."),
+    llm_path: str | None = typer.Option(
+        None,
+        "--llm-path",
+        help=(
+            "Override the LLM-translation file path (default "
+            "data/output/<part_id>/translation.en.txt). Use a literal path "
+            "or a {part_id} template, e.g. "
+            "'data/output/{part_id}-v2-rag-deepseek/translation.en.txt'. "
+            "Specify exactly one part with --parts when using a literal path."
+        ),
+    ),
+    reference_path: str | None = typer.Option(
+        None,
+        "--reference-path",
+        help=(
+            "Override the reference path (default: human EN from "
+            "data/parallel/<part_id>.en.txt). Same templating rules as "
+            "--llm-path. Use to compare against another AI translation "
+            "for ablation studies (no human reference required)."
+        ),
+    ),
 ) -> None:
-    """Extract deviations for a batch and write per-chapter notes to the vault."""
+    """Extract deviations for a batch and write per-chapter notes to the vault.
+
+    The default flow compares the canonical AI output (``data/output/<part>/
+    translation.en.txt``) against the human reference (``data/parallel/
+    <part>.en.txt``). For chapters past the human-translated range, or for
+    A/B-testing two AI configurations, pass --llm-path and --reference-path
+    to override both sides.
+    """
     from translator.eval import extract_deviations
     from translator.prep.corpus import load_part_en, load_part_jp
     from translator.prep.holdout import load_holdout
@@ -874,24 +973,41 @@ def evaluate_deviations(
     else:
         part_ids = [p.strip() for p in parts.split(",") if p.strip()]
 
+    def _resolve(template_or_path: str | None, pid: str, default: Path) -> Path:
+        if template_or_path is None:
+            return default
+        return Path(template_or_path.format(part_id=pid))
+
     for pid in part_ids:
-        out_path = PATHS.output / pid / "translation.en.txt"
-        if not out_path.exists():
-            console.print(f"[yellow]skip {pid}: no translation at {out_path}[/yellow]")
+        llm_p = _resolve(
+            llm_path, pid, PATHS.output / pid / "translation.en.txt"
+        )
+        if not llm_p.exists():
+            console.print(f"[yellow]skip {pid}: no LLM translation at {llm_p}[/yellow]")
             continue
-        reference = load_part_en(pid)
-        if reference is None:
-            console.print(f"[yellow]skip {pid}: no reference translation[/yellow]")
-            continue
+        if reference_path is None:
+            reference = load_part_en(pid)
+            if reference is None:
+                console.print(f"[yellow]skip {pid}: no human reference translation[/yellow]")
+                continue
+        else:
+            ref_p = _resolve(reference_path, pid, Path())
+            if not ref_p.exists():
+                console.print(f"[yellow]skip {pid}: reference not found at {ref_p}[/yellow]")
+                continue
+            reference = ref_p.read_text(encoding="utf-8")
         note = extract_deviations(
             part_id=pid,
             round_number=round_number,
             jp=load_part_jp(pid),
-            llm_translation=out_path.read_text(encoding="utf-8"),
+            llm_translation=llm_p.read_text(encoding="utf-8"),
             reference=reference,
             model=model,
         )
-        console.print(f"[green]{pid}[/green]: {len(note.deviations)} deviations recorded")
+        console.print(
+            f"[green]{pid}[/green]: {len(note.deviations)} deviations recorded "
+            f"(LLM={llm_p}, ref={'human' if reference_path is None else _resolve(reference_path, pid, Path())})"
+        )
 
 
 @evaluate_app.command("critique")
@@ -904,12 +1020,24 @@ def evaluate_critique(
         "--precedents/--no-precedents",
         help="Inject paragraph-level reference precedents into the critique prompt.",
     ),
+    draft_path: str | None = typer.Option(
+        None,
+        "--draft-path",
+        help=(
+            "Override the draft path (default "
+            "data/output/<part_id>/translation.en.txt). Supports {part_id} "
+            "templates, e.g. "
+            "'data/output/{part_id}-v2-rag-deepseek-auto/translation.en.txt'. "
+            "The critique is written next to the chosen draft."
+        ),
+    ),
 ) -> None:
     """Run the inline critic on existing drafts without re-translating.
 
-    Reads each part's ``data/output/<part>/translation.en.txt`` and
-    persists ``critique.json`` next to it. Useful for inspecting the
-    critic's calibration before turning on the full revision loop.
+    Reads each part's draft (by default
+    ``data/output/<part>/translation.en.txt``) and persists
+    ``critique.json`` next to it. Useful for inspecting the critic's
+    calibration before turning on the full revision loop.
     """
     from translator.eval import critique_translation
     from translator.prep.corpus import load_part_jp
@@ -924,23 +1052,28 @@ def evaluate_critique(
     else:
         part_ids = [p.strip() for p in parts.split(",") if p.strip()]
 
+    def _resolve_draft(pid: str) -> Path:
+        if draft_path is None:
+            return PATHS.output / pid / "translation.en.txt"
+        return Path(draft_path.format(part_id=pid))
+
     for pid in part_ids:
-        draft_path = PATHS.output / pid / "translation.en.txt"
-        if not draft_path.exists():
-            console.print(f"[yellow]skip {pid}: no draft at {draft_path}[/yellow]")
+        draft_p = _resolve_draft(pid)
+        if not draft_p.exists():
+            console.print(f"[yellow]skip {pid}: no draft at {draft_p}[/yellow]")
             continue
         result = critique_translation(
             part_id=pid,
             jp=load_part_jp(pid),
-            draft=draft_path.read_text(encoding="utf-8"),
+            draft=draft_p.read_text(encoding="utf-8"),
             model=model,
             use_precedents=use_precedents,
         )
-        result.write()
+        critique_path = result.write(draft_p.parent / "critique.json")
         console.print(
             f"[green]{pid}[/green]: {len(result.major_flags)} major + "
             f"{len(result.minor_flags)} minor flag(s) "
-            f"[dim](critique.json written)[/dim]"
+            f"[dim]({critique_path} written)[/dim]"
         )
         if show_flags:
             for i, f in enumerate(result.flags, 1):
@@ -1170,7 +1303,7 @@ def precedents_build(
     Reads every translated, supported-POV part by default; runs
     length-only DP paragraph alignment (no EN embedding); embeds the
     JP side with text-embedding-3-small; writes the result to
-    ``data/precedent_index/`` for retrieval at translation time.
+    ``knowledge-vault/precedent-index/`` for retrieval at translation time.
 
     The build is incremental: re-running adds any newly-translated
     chapters. Pass ``--rebuild`` to wipe the index and start over (use
@@ -1348,6 +1481,126 @@ def precedents_validate(
             )
             console.print(f"    JP: {ex['jp_text']}")
             console.print(f"    EN: {ex['en_text']}")
+
+
+# ---------------------------------------------------------------------------
+# ai-ref
+# ---------------------------------------------------------------------------
+
+@ai_ref_app.command("promote")
+def ai_ref_promote(
+    part: str = typer.Option(..., "--part", help="Part id to promote (e.g. part_230)."),
+    from_path: str | None = typer.Option(
+        None,
+        "--from",
+        help=(
+            "Explicit path to the translation.en.txt to register. "
+            "Mutually exclusive with --suffix."
+        ),
+    ),
+    suffix: str | None = typer.Option(
+        None,
+        "--suffix",
+        help=(
+            "Output suffix to resolve as data/output/{part_id}-{suffix}/"
+            "translation.en.txt. Mutually exclusive with --from."
+        ),
+    ),
+    model: str = typer.Option(
+        "",
+        "--model",
+        help=(
+            "Override the model recorded in the manifest entry. By default "
+            "we read it from the source meta.json."
+        ),
+    ),
+) -> None:
+    """Promote an AI translation to the references manifest.
+
+    Once promoted, the chapter is auto-appended to the sliding window
+    of any subsequent translation whose part number is higher.
+    """
+    from translator.inference.ai_references import promote
+
+    if (from_path is None) == (suffix is None):
+        console.print(
+            "[red]Provide exactly one of --from or --suffix.[/red]"
+        )
+        raise typer.Exit(2)
+    part_id = _normalize_part(part)
+    try:
+        entry = promote(
+            part_id,
+            en_text=Path(from_path) if from_path else None,
+            source_suffix=suffix,
+            model=model,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from exc
+
+    table = Table(title=f"Promoted {entry.part_id}")
+    table.add_column("field")
+    table.add_column("value")
+    table.add_row("part_id", entry.part_id)
+    table.add_row("en_text", str(entry.en_text))
+    table.add_row("model", entry.model or "(unknown)")
+    table.add_row("source_suffix", entry.source_suffix)
+    table.add_row("promoted_at", entry.promoted_at)
+    table.add_row("manifest", str(PATHS.ai_references_manifest))
+    console.print(table)
+
+
+@ai_ref_app.command("list")
+def ai_ref_list() -> None:
+    """List blessed AI translations in the references manifest."""
+    from translator.inference.ai_references import load_manifest
+
+    manifest = load_manifest()
+    if manifest.is_empty:
+        console.print(
+            f"[dim]manifest is empty: {PATHS.ai_references_manifest}[/dim]"
+        )
+        console.print(
+            "[dim]promote drafts with `translator ai-ref promote --part part_NNN "
+            "--suffix v2-rag-deepseek`[/dim]"
+        )
+        return
+
+    table = Table(title=f"AI references ({PATHS.ai_references_manifest})")
+    table.add_column("part_id")
+    table.add_column("model")
+    table.add_column("source")
+    table.add_column("promoted_at")
+    table.add_column("exists")
+    for entry in manifest.sorted_by_part():
+        table.add_row(
+            entry.part_id,
+            entry.model or "(unknown)",
+            entry.source_suffix,
+            entry.promoted_at,
+            "yes" if entry.en_text.exists() else "[red]MISSING[/red]",
+        )
+    console.print(table)
+
+
+@ai_ref_app.command("remove")
+def ai_ref_remove(
+    part: str = typer.Option(..., "--part", help="Part id to remove."),
+) -> None:
+    """Remove an entry from the AI references manifest."""
+    from translator.inference.ai_references import (
+        load_manifest,
+        save_manifest,
+    )
+
+    part_id = _normalize_part(part)
+    manifest = load_manifest()
+    if manifest.remove(part_id):
+        save_manifest(manifest)
+        console.print(f"[green]removed {part_id} from manifest[/green]")
+    else:
+        console.print(f"[yellow]{part_id} not found in manifest[/yellow]")
 
 
 # ---------------------------------------------------------------------------

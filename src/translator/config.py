@@ -39,8 +39,6 @@ class Paths:
     parallel: Path = DATA_DIR / "parallel"
     metadata: Path = DATA_DIR / "metadata"
     toc_json: Path = DATA_DIR / "metadata" / "toc.json"
-    pov_overrides: Path = DATA_DIR / "metadata" / "pov_overrides.json"
-    glossary_seed: Path = DATA_DIR / "metadata" / "glossary_seed.json"
     holdout_json: Path = DATA_DIR / "metadata" / "holdout.json"
     output: Path = DATA_DIR / "output"
     # Precedent RAG index v1: JP↔EN paragraph pairs aligned by length-only
@@ -56,6 +54,11 @@ class Paths:
     # Built via ``scripts/reindex_corpus_full.py`` (DeepSeek V4-Pro).
     # When this directory exists, retrieval prefers it over v1.
     precedent_index_v2: Path = VAULT_DIR / "precedent-index-v2"
+    # Manifest of "blessed" AI translations that may be used as window
+    # references when translating chapters past the human-translated
+    # range. Curated via ``translator ai-ref promote``; consumed by the
+    # ``translate`` command's auto-AI-reference logic.
+    ai_references_manifest: Path = VAULT_DIR / "ai-references.json"
 
     knowledge_vault: Path = VAULT_DIR
 
@@ -84,7 +87,6 @@ class VaultLayout:
     """
 
     deviations: str = "deviations"
-    rules: str = "rules"
     rules_active: str = "rules/active"
     rules_candidate: str = "rules/candidate"
     rules_pruned: str = "rules/pruned"
@@ -313,6 +315,18 @@ class Thresholds:
     # are noisier than paragraph-level ones. 0.55 keeps high-confidence
     # idiom matches while filtering out incidental lexical overlap.
     phrase_precedents_min_score: float = 0.55
+
+    # AI-reference sliding window. Once the human-translated portion of
+    # the corpus runs out (part_229 in this run), subsequent chapters
+    # need *something* in the most-recent slots of the reference window
+    # to maintain plot continuity. We promote each blessed AI output to
+    # ``knowledge-vault/ai-references.json`` and the translate command
+    # auto-appends the most-recent up to this many AI-translated parts
+    # before the target. They render with a clear AI-TRANSLATED warning
+    # so the model uses them for narrative continuity but not as a
+    # style anchor — the 10 human references above the AI block keep
+    # the style ground truth.
+    ai_reference_window_size: int = 10
 
 
 THRESHOLDS = Thresholds()

@@ -176,33 +176,3 @@ def format_rules_for_prompt(rules: list[Rule]) -> str:
     return "\n\n".join(blocks)
 
 
-def promote_rule(
-    rule_id: str,
-    *,
-    from_state: RuleState,
-    to_state: RuleState,
-    score_delta: float | None = None,
-    prune_reason: str | None = None,
-    last_validated_round: int | None = None,
-    root: Path | None = None,
-) -> Path:
-    """Move a rule from one state to another, updating provenance metadata.
-
-    The old file is removed; the new file is written under the target
-    state's directory. Raises ``FileNotFoundError`` if the source rule
-    can't be located.
-    """
-    src = _state_dir(from_state, root) / f"{rule_id}.md"
-    if not src.exists():
-        raise FileNotFoundError(src)
-    rule = Rule.from_note(read_note(src))
-    rule.state = to_state
-    if score_delta is not None:
-        rule.score_delta = score_delta
-    if prune_reason is not None and to_state == "pruned":
-        rule.prune_reason = prune_reason
-    if last_validated_round is not None:
-        rule.last_validated_round = last_validated_round
-    new_path = write_rule(rule, root)
-    src.unlink()
-    return new_path

@@ -64,14 +64,34 @@ def _load_template() -> tuple[str, str]:
 
 
 def _format_window(window: Window) -> str:
-    """Render the reference parts as JP-EN pairs, separated by ``---``."""
+    """Render the reference parts as JP-EN pairs, separated by ``---``.
+
+    Human references render with a plain header. AI-translated
+    references (extending the window past the human-translated range)
+    render with an explicit warning header instructing the model to
+    use them for plot continuity only — not as a style anchor — so the
+    AI's own stylistic tics don't compound across chapters.
+    """
     if not window.parts:
         return "_(no reference parts available — translating cold)_"
     blocks: list[str] = []
     for ref in window.parts:
         ident = ref.entry.id
         pov = ref.entry.pov
-        header = f"# REFERENCE [{ident}, POV: {pov}]"
+        if ref.is_ai_translated:
+            label = ref.ai_source_label or "AI-translated"
+            header = (
+                f"# REFERENCE [{ident}, POV: {pov}] — AI-TRANSLATED ({label})\n\n"
+                f"> NOTE: The English text below was produced by an AI translator, "
+                f"NOT by the human reference translator. Use it for narrative "
+                f"continuity (knowing what just happened in the story) but do "
+                f"NOT imitate its stylistic choices, register, idiom selection, "
+                f"or sentence rhythm. Only the human reference parts above "
+                f"should anchor your translation style. Treat the EN text "
+                f"below as plot summary, not as a style example."
+            )
+        else:
+            header = f"# REFERENCE [{ident}, POV: {pov}]"
         block = (
             f"{header}\n\n"
             f"## Japanese\n\n{ref.jp_text.strip()}\n\n"

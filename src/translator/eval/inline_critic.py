@@ -125,6 +125,7 @@ CRITIQUE_JSON_SCHEMA: dict = {
         "properties": {
             "flags": {
                 "type": "array",
+                "maxItems": 20,
                 "items": {
                     "type": "object",
                     "properties": {

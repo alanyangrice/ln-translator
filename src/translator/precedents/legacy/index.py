@@ -12,7 +12,7 @@ For each translated chapter (``part_NNN.jp.txt`` + ``part_NNN.en.txt``):
    later search against at retrieval time (the new chapter's JP
    queries dot-product against this matrix).
 
-Persistence layout (``data/precedent_index/``):
+Persistence layout (``knowledge-vault/precedent-index/``):
 
 * ``pairs.jsonl`` — one record per indexed entry::
 

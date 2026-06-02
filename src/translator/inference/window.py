@@ -14,14 +14,21 @@ miyagi-vs-sendai voice signal the prompt depends on.
 
 The window does *not* assemble the prompt itself; it returns an ordered
 list of :class:`ReferencePart` objects which :mod:`prompt` then renders.
+
+When the corpus runs out of human-translated references (e.g. when
+translating chapters past the last human-translated part), callers can
+append AI-translated references via :func:`build_ai_reference`. These
+are rendered with a clear warning label so the model uses them for
+narrative continuity but does not imitate their style.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from translator.config import THRESHOLDS
-from translator.prep.corpus import Part, iter_parts
+from translator.prep.corpus import Part, iter_parts, load_part_jp
 from translator.prep.holdout import HoldoutPlan
 from translator.prep.pov import POVLookup, load_pov_lookup
 from translator.scraper.models import POV, SUPPORTED_POVS, TocEntry
@@ -29,11 +36,21 @@ from translator.scraper.models import POV, SUPPORTED_POVS, TocEntry
 
 @dataclass
 class ReferencePart:
-    """A single part in the sliding window."""
+    """A single part in the sliding window.
+
+    ``is_ai_translated`` flags references whose EN text was produced by
+    the v3 pipeline itself, not by the human reference translator.
+    Those references are rendered with a warning header so the LLM
+    knows to use them only for plot continuity, not as a style anchor.
+    ``ai_source_label`` carries a short provenance string (typically
+    the directory name under ``data/output/``) for debug visibility.
+    """
 
     entry: TocEntry
     jp_text: str
     en_text: str
+    is_ai_translated: bool = False
+    ai_source_label: str | None = None
 
 
 @dataclass
@@ -124,4 +141,38 @@ def build_window(
     )
 
 
-__all__ = ["ReferencePart", "Window", "build_window"]
+def build_ai_reference(
+    part_id: str,
+    en_text_path: Path,
+    *,
+    lookup: POVLookup | None = None,
+    source_label: str | None = None,
+) -> ReferencePart:
+    """Build a :class:`ReferencePart` for an AI-translated chapter.
+
+    Used to extend the sliding window past the last human-translated
+    part. The JP text is loaded from the corpus (must already exist on
+    disk under ``data/parallel/``); the EN text is read from
+    ``en_text_path`` (typically ``data/output/{part_id}-{suffix}/translation.en.txt``).
+
+    The returned ReferencePart carries ``is_ai_translated=True`` so
+    :func:`translator.inference.prompt._format_window` renders it with
+    an explicit warning header. ``source_label`` defaults to the parent
+    directory name of ``en_text_path`` (e.g. ``part_230-v2-rag-deepseek``)
+    so the prompt records which AI run produced the reference.
+    """
+    lookup = lookup or load_pov_lookup()
+    entry = lookup.get(part_id)
+    jp_text = load_part_jp(part_id)
+    en_text = en_text_path.read_text(encoding="utf-8")
+    label = source_label or en_text_path.parent.name
+    return ReferencePart(
+        entry=entry,
+        jp_text=jp_text,
+        en_text=en_text,
+        is_ai_translated=True,
+        ai_source_label=label,
+    )
+
+
+__all__ = ["ReferencePart", "Window", "build_ai_reference", "build_window"]

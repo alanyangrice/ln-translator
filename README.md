@@ -171,25 +171,28 @@ src/translator/
   scraper/      JP/EN site scrapers, ToC parser, pair verification
   prep/         POV lookup, stratified holdout, parallel corpus loaders
   vault/        knowledge-vault read/write helpers (rules, deviations, summaries)
-  glossary/     vault-aware glossary loader (fallback to data/metadata/glossary_seed.json)
+  glossary/     vault-aware glossary loader (reads knowledge-vault/glossary/glossary.md)
   style/        16-dimension style profile extractor + loader
   inference/    sliding-window builder, prompt assembler, provider abstraction
   validation/   dialogue parity, name frequency, length ratio checks
   eval/         COMET / BERTScore / deviation extractor / rule clusterer / LLM judge
 
 data/
-  metadata/     toc.json, holdout.json, glossary_seed.json (tracked in git)
+  metadata/     toc.json, holdout.json (tracked in git)
   raw/          raw scraped HTML (gitignored)
   parallel/     part_NNN.{jp,en}.{txt,json} (gitignored)
   output/       per-part translation prompts and outputs (gitignored)
 
 knowledge-vault/  (created by `translator vault init`; tracked in git)
-  glossary/         curated term mappings
-  style/            16 per-dimension profile files (01-tone.md … 16-character-voice.md)
+  glossary/             curated term mappings
+  style/                16 per-dimension profile files (01-tone.md … 16-character-voice.md)
   rules/{active,candidate,pruned,inactive}/
   deviations/round-NN/
   evaluations/round-NN-summary.md
-  config/{prompt-template,comparison-prompt-template,clustering-prompt-template}.md
+  config/{prompt-template,comparison-prompt-template,clustering-prompt-template,critique-prompt-template,revise-prompt-template}.md
+  precedent-index-v2/   LLM-extracted phrase + paragraph precedents (active RAG index)
+  precedent-index/      v1 length-DP paragraph precedents (legacy fallback)
+  ai-references.json    manifest of blessed AI translations promoted via `translator ai-ref`
 
 tests/                pytest suites
 ```

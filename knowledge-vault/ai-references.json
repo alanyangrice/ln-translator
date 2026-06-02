@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "entries": {
+    "part_230": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_230-v2-rag-deepseek/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek",
+      "promoted_at": "2026-05-28T12:31:35+00:00"
+    },
+    "part_231": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_231-v2-rag-deepseek-with-ai-230/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-with-ai-230",
+      "promoted_at": "2026-05-28T12:31:35+00:00"
+    },
+    "part_232": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_232-v2-rag-deepseek/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek",
+      "promoted_at": "2026-05-31T02:11:55+00:00"
+    },
+    "part_233": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_233-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:16:18+00:00"
+    },
+    "part_234": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_234-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:22:28+00:00"
+    },
+    "part_235": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_235-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:28:27+00:00"
+    },
+    "part_236": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_236-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:32:05+00:00"
+    },
+    "part_237": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_237-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:34:32+00:00"
+    },
+    "part_238": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_238-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:36:44+00:00"
+    },
+    "part_239": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_239-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:40:29+00:00"
+    },
+    "part_240": {
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_240-v2-rag-deepseek-auto/translation.en.txt",
+      "model": "deepseek-v4-pro",
+      "source_suffix": "v2-rag-deepseek-auto",
+      "promoted_at": "2026-05-31T02:43:21+00:00"
+    }
+  }
+}

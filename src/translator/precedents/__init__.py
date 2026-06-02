@@ -11,8 +11,8 @@ one-time mining step over the corpus produces a vault/data artifact,
 plus a query-time loader that substitutes a placeholder into existing
 templates. Public API:
 
-* :func:`build_index` — populate ``data/precedent_index/`` from the
-  parallel corpus (one-time, cheap).
+* :func:`build_index` — populate ``knowledge-vault/precedent-index/`` from
+  the parallel corpus (one-time, cheap; v1 length-DP path only).
 * :func:`retrieve_for_part` — embed a target chapter's JP queries and
   return the top-K matched precedents at each granularity.
 * :func:`format_precedents_for_prompt` — render a :class:`RetrievalResult`

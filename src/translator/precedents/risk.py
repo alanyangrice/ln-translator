@@ -47,8 +47,12 @@ from translator.precedents.extract import default_v2_root
 from translator.prep.corpus import load_part_jp
 
 
-# Sonnet by default. Override with ``--model`` (e.g. deepseek-v4-pro).
-DEFAULT_RISK_MODEL = "claude-sonnet-4-6"
+# DeepSeek V4-Pro by default — same model that built the v2 phrase index,
+# so its category vocabulary aligns with extracted precedents, and the
+# scan cost drops by ~7-17× vs. claude-sonnet-4-6 at no measurable
+# quality loss on the chapters we've checked. Override with ``--risk-model``
+# (e.g. ``claude-sonnet-4-6`` for a higher-cost / higher-judgment pass).
+DEFAULT_RISK_MODEL = "deepseek-v4-pro"
 
 # Output cap: a 5K-char chapter typically yields 20-50 risk entries
 # at < 200 chars per record. 16K is generous headroom.
@@ -130,6 +134,11 @@ words / one verb (余裕だった → "called it easy"; よくわからない �
 - ``cultural``: culture-specific terms (制服, 部活, 先輩, family-name \
 + さん addressing, etc.) where context determines whether to romanize, \
 calque, or paraphrase.
+- relationship / contract motifs: recurring story terms where a loose \
+English synonym changes the relationship logic (命令 vs. お願い / \
+リクエスト, いうことをきく, 私のもの, バイト). Flag these when the \
+chapter context makes the distinction important, even if the word is \
+not an idiom.
 - ``other``: any other phrase you'd flag from experience.
 
 Skip phrases that translate cleanly word-for-word. Skip standard \
@@ -240,8 +249,18 @@ def _filter_verbatim(risks: ChapterRisks, jp_source: str) -> ChapterRisks:
     return ChapterRisks(part_id=risks.part_id, risks=kept)
 
 
-def _risk_cache_path(root: Path, part_id: str) -> Path:
-    return root / "risk-cache" / f"{part_id}.json"
+def _risk_cache_path(root: Path, part_id: str, model: str) -> Path:
+    """Cache path scoped by model so swapping risk scanners doesn't
+    silently reuse a stale scan from a different model.
+
+    Example: ``risk-cache/part_230.deepseek-v4-pro.json`` and
+    ``risk-cache/part_230.claude-sonnet-4-6.json`` can coexist.
+    Old un-scoped caches (``risk-cache/part_230.json``, all Sonnet)
+    are intentionally not auto-migrated — they'll regenerate on first
+    use under the new naming scheme.
+    """
+    safe_model = model.replace("/", "-")
+    return root / "risk-cache" / f"{part_id}.{safe_model}.json"
 
 
 def scan_chapter(
@@ -256,7 +275,7 @@ def scan_chapter(
     Caches raw LLM output at ``cache_root/risk-cache/{part_id}.json``.
     """
     root = cache_root or default_v2_root()
-    cp = _risk_cache_path(root, part_id)
+    cp = _risk_cache_path(root, part_id, model)
 
     jp_text = load_part_jp(part_id)
     if not jp_text:

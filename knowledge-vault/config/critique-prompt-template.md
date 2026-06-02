@@ -64,6 +64,13 @@ Skip:
 * Word-order differences that don't change meaning or rhythm.
 * Trivial nits when the surrounding prose is already strong.
 
+Hard cap:
+
+* Return **at most 20 flags**. Prioritize major meaning loss, clear
+  translationese, glossary violations, and repeated/systematic issues.
+  If a problem repeats, include one representative flag and explain the
+  pattern in `notes` rather than emitting dozens of near-duplicates.
+
 # Output format
 
 For each issue, return a JSON object with these fields:

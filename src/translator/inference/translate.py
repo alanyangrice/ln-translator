@@ -31,10 +31,14 @@ from translator.eval.inline_critic import (
     critique_translation,
     revision_required,
 )
+from translator.inference.ai_references import (
+    AIReferenceEntry,
+    find_recent_for_target,
+)
 from translator.inference.prompt import AssembledPrompt, assemble_prompt
 from translator.inference.provider import complete, detect_provider
 from translator.inference.revise import revise_translation
-from translator.inference.window import Window, build_window
+from translator.inference.window import Window, build_ai_reference, build_window
 from translator.precedents import (
     RetrievalResult,
     index_exists,
@@ -96,6 +100,10 @@ def translate_part(
     revise_minor_threshold: int | None = None,
     use_precedents: bool = True,
     output_suffix: str | None = None,
+    ai_references: list[tuple[str, Path]] | None = None,
+    auto_ai_references: bool = True,
+    ai_reference_limit: int | None = None,
+    risk_model: str | None = None,
 ) -> TranslationResult:
     """Translate ``part_id`` end-to-end with optional critic + revision loop.
 
@@ -139,6 +147,33 @@ def translate_part(
         built yet (the prompt assembler also auto-detects a missing
         index, but this flag short-circuits the embedding round-trip
         even earlier).
+    ai_references
+        Optional list of ``(part_id, en_text_path)`` tuples appended
+        to the sliding window as **AI-translated** references. Used
+        to extend context past the last human-translated chapter
+        (e.g. translating ``part_231`` with a v2-rag-deepseek run of
+        ``part_230`` as the most-recent reference). Each appended
+        reference renders with an explicit warning header telling the
+        model to use it only for plot continuity, not as a style
+        anchor, so AI stylistic tics don't compound across chapters.
+        When ``auto_ai_references`` is True the manifest entries are
+        also folded in (explicit ones take priority, manifest fills
+        the rest).
+    auto_ai_references
+        If True (default), auto-append the most-recent up to
+        ``ai_reference_limit`` entries from
+        :attr:`PATHS.ai_references_manifest` whose part number is less
+        than the target's. Promote drafts with ``translator ai-ref
+        promote``. Pass False to disable manifest auto-loading and rely
+        on ``ai_references`` (or no AI references at all).
+    ai_reference_limit
+        Override :attr:`Thresholds.ai_reference_window_size` (default 10).
+        Useful for ablations.
+    risk_model
+        Override the at-risk scanner model
+        (:data:`translator.precedents.risk.DEFAULT_RISK_MODEL`,
+        currently ``deepseek-v4-pro``). Cache is scoped by model so
+        switching scanners doesn't reuse stale results.
     """
     lookup = lookup or load_pov_lookup()
     entry = lookup.get(part_id)
@@ -162,6 +197,55 @@ def translate_part(
         lookup=lookup,
     )
 
+    # Merge explicit ai_references (from the caller) with manifest-loaded
+    # ones. Explicit overrides take priority: if the same part_id is in
+    # both, the explicit path wins. Otherwise the manifest fills any
+    # remaining slots up to ``ai_reference_limit``.
+    merged_ai_refs: list[tuple[str, Path, AIReferenceEntry | None]] = []
+    explicit_part_ids: set[str] = set()
+    for ai_part_id, ai_en_path in ai_references or ():
+        merged_ai_refs.append((ai_part_id, ai_en_path, None))
+        explicit_part_ids.add(ai_part_id)
+
+    if auto_ai_references:
+        limit = (
+            ai_reference_limit
+            if ai_reference_limit is not None
+            else THRESHOLDS.ai_reference_window_size
+        )
+        try:
+            manifest_entries = find_recent_for_target(
+                part_id, limit=limit + len(explicit_part_ids)
+            )
+        except FileNotFoundError as exc:
+            # Stale manifest entry — fail loud rather than silently
+            # producing a translation without continuity context.
+            raise FileNotFoundError(
+                f"auto AI references could not be loaded: {exc}"
+            ) from exc
+        for entry in manifest_entries:
+            if entry.part_id in explicit_part_ids:
+                continue
+            if len(merged_ai_refs) >= limit + len(explicit_part_ids):
+                break
+            merged_ai_refs.append((entry.part_id, entry.en_text, entry))
+
+    # Sort merged refs by part number so the most-recent ends up at the
+    # end of the window (immediately before the target chapter).
+    merged_ai_refs.sort(key=lambda t: int(t[0].split("_")[1]))
+
+    for ai_part_id, ai_en_path, entry in merged_ai_refs:
+        ai_ref = build_ai_reference(
+            ai_part_id, ai_en_path, lookup=lookup
+        )
+        window.parts.append(ai_ref)
+        provenance = entry.source_suffix if entry else ai_en_path.parent.name
+        window.notes.append(
+            f"window: appended AI-translated reference {ai_part_id} "
+            f"from {provenance}"
+            + (" (from manifest)" if entry else " (explicit)")
+        )
+
     # Retrieve precedents once and reuse across translate + revise +
     # critique so the embedding round-trip is paid one time per
     # chapter regardless of how many critic/revision rounds run.
@@ -175,9 +259,14 @@ def translate_part(
 
         if v2_index_exists():
             try:
-                from translator.precedents.risk import scan_chapter
+                from translator.precedents.risk import (
+                    DEFAULT_RISK_MODEL,
+                    scan_chapter,
+                )
 
-                risks_result = scan_chapter(part_id)
+                risks_result = scan_chapter(
+                    part_id, model=risk_model or DEFAULT_RISK_MODEL
+                )
                 risks = risks_result.risks
             except Exception:  # pylint: disable=broad-except
                 risks = None

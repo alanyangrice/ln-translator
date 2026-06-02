@@ -30,7 +30,6 @@ from translator.vault.rules import (
     load_active_rules,
     load_pruned_rules,
     load_rules_by_state,
-    promote_rule,
     write_rule,
 )
 
@@ -45,7 +44,6 @@ __all__ = [
     "load_active_rules",
     "load_pruned_rules",
     "load_rules_by_state",
-    "promote_rule",
     "read_note",
     "vault_status",
     "write_deviation_note",

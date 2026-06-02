@@ -1,0 +1,20 @@
+{
+  "part_230": {
+    "output_dir": "part_230-v2-rag-deepseek",
+    "promoted_at": "2026-05-28T12:05:59.379335+00:00",
+    "model": "deepseek-v4-pro",
+    "notes": "DeepSeek V4-Pro + v2 RAG (phrase+paragraph). Reviewed manually."
+  },
+  "part_231": {
+    "output_dir": "part_231-v2-rag-deepseek-with-ai-230",
+    "promoted_at": "2026-05-28T12:05:59.518241+00:00",
+    "model": "deepseek-v4-pro",
+    "notes": "DeepSeek V4-Pro + v2 RAG + AI ref to 230. Reviewed."
+  },
+  "part_232": {
+    "output_dir": "part_232-v2-rag-deepseek",
+    "promoted_at": "2026-05-28T12:11:27.142021+00:00",
+    "model": "deepseek-v4-pro",
+    "notes": "DeepSeek V4-Pro + v2 RAG + auto AI refs (230, 231). DeepSeek risk-scan."
+  }
+}

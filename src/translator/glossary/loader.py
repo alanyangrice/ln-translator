@@ -1,13 +1,14 @@
 """Glossary file loading + prompt formatting.
 
-Reads either the vault Markdown table or the JSON seed; format is
-forgiving so a translator editing the file in Obsidian doesn't have to
-worry about strict column ordering as long as the headers match.
+Reads the vault Markdown table (``knowledge-vault/glossary/glossary.md``).
+Parsing is forgiving so a translator editing the file in Obsidian doesn't
+have to worry about strict column ordering as long as the headers match.
+A fresh vault is seeded with the same scaffold table by
+``translator vault init``.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -65,29 +66,16 @@ def _load_from_vault(vault_glossary: Path) -> list[GlossaryEntry]:
     return _parse_markdown_table(vault_glossary.read_text(encoding="utf-8"))
 
 
-def _load_from_seed(seed_path: Path) -> list[GlossaryEntry]:
-    raw = json.loads(seed_path.read_text(encoding="utf-8"))
-    return [
-        GlossaryEntry(
-            japanese=row["japanese"],
-            english=row["english"],
-            notes=row.get("notes", ""),
-        )
-        for row in raw
-    ]
-
-
 def load_glossary() -> list[GlossaryEntry]:
-    """Load the glossary, preferring the vault and falling back to seed.
+    """Load the glossary from the knowledge vault.
 
-    Returns an empty list if neither source exists, so callers don't
-    have to special-case bootstrap state.
+    Returns an empty list when the vault hasn't been initialized yet
+    (run ``translator vault init``), so callers don't have to
+    special-case bootstrap state.
     """
     vault_glossary = PATHS.knowledge_vault / VAULT.glossary_file
     if vault_glossary.exists():
         return _load_from_vault(vault_glossary)
-    if PATHS.glossary_seed.exists():
-        return _load_from_seed(PATHS.glossary_seed)
     return []
 
 
