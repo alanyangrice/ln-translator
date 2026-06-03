@@ -21,9 +21,10 @@ You will receive:
   along 16 dimensions.
 * **Reference precedents** — past JP→EN pairs from the corpus where the
   JP source is structurally similar to passages in this chapter. Treat
-  the EN side as a high-signal model of how this translator handles
-  these JP shapes; flag draft spans that diverge from the precedent's
-  rendering when they share the same JP pattern.
+  the EN side as evidence, not as an automatic command. A precedent is
+  useful only when it reads naturally, matches the same context, and
+  does not conflict with the active rules, glossary, or human reference
+  style.
 * The Japanese source.
 * The draft English translation to audit.
 
@@ -38,6 +39,10 @@ You will receive:
   (e.g. profile says "frequent contractions" but the draft uses formal
   forms), flag with `category: style-profile` and cite the dimension
   in `notes` (e.g. "violates style profile §3 sentence structure").
+* **Natural English sentence structure comes before source clause
+  order.** Preserve the source's meaning, agency, and emotional sequence,
+  but do not preserve Japanese word/clause order when English would
+  naturally reorder the setup, action, and conclusion.
 
 # What to flag
 
@@ -52,6 +57,11 @@ Focus on:
   literalizations (`喉を潤す` → "quench my throat"). When in doubt,
   read the span aloud — if a native speaker would think "this sounds
   translated," flag it.
+* **Clause-order mirroring.** Flag sentences that are accurate in
+  content but still feel arranged around Japanese syntax: overloaded
+  relative clauses, abstract nouns doing unnatural work as subjects,
+  disembodied "voice" subjects when the speaker is known, or long
+  connective chains that should be split in English.
 * **Voice / register mismatches** for the POV character (Sendai,
   Miyagi, Maika).
 * **Style-profile divergences** — sentence rhythm, paragraph
@@ -61,7 +71,8 @@ Focus on:
 Skip:
 
 * Genuine synonym variation where both options would read naturally.
-* Word-order differences that don't change meaning or rhythm.
+* Natural English word-order changes that preserve meaning, agency, and
+  rhythm.
 * Trivial nits when the surrounding prose is already strong.
 
 Hard cap:

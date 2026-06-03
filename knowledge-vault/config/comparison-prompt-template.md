@@ -43,6 +43,9 @@ You will receive:
   `translationese` even if the literal meaning matches.
 * Minor word-order differences that don't change meaning *and* don't
   change rhythm noticeably.
+  Natural English reordering is not a deviation; Japanese-order mirroring
+  that makes the English stiff or translated is a `sentence-structure`
+  or `translationese` deviation.
 
 # What to flag
 

@@ -32,10 +32,10 @@
       "promoted_at": "2026-05-31T02:22:28+00:00"
     },
     "part_235": {
-      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_235-v2-rag-deepseek-auto/translation.en.txt",
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_235-v2-rag-deepseek-rules-v11/translation.en.txt",
       "model": "deepseek-v4-pro",
-      "source_suffix": "v2-rag-deepseek-auto",
-      "promoted_at": "2026-05-31T02:28:27+00:00"
+      "source_suffix": "v2-rag-deepseek-rules-v11",
+      "promoted_at": "2026-06-03T04:28:05+00:00"
     },
     "part_236": {
       "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_236-v2-rag-deepseek-auto/translation.en.txt",

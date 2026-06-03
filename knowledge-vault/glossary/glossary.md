@@ -41,3 +41,9 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | いうことをきく | do what [person] says / listen to [person] | In Miyagi's ownership/order logic, prefer "do what I say" when obedience is the point. "Listen to me" is acceptable only when ordinary listening, not compliance, is meant. Avoid heavier BDSM/servitude wording like "submit" unless the JP explicitly supports it |
 | 命令 | order | Relationship motif and hard term. Do not flatten to "request" or "favor" |
 | お願い / リクエスト | request / favor / order | Usually softer than 命令, but in the Miyagi-Sendai "what do you want me to do?" dynamic it can continue the established order motif. If Sendai is inviting Miyagi to name what she wants done, prefer "give me an order" / "tell me what to do" over "request." Otherwise keep "request" / "favor". Never use stagey "take requests" |
+| 鍋 | hot pot | Use "hot pot" in ordinary narration/dialogue. Avoid unexplained "nabe" unless a scene explicitly foregrounds the Japanese term itself. |
+| 水炊き | mizutaki hot pot / chicken hot pot | On first mention, "mizutaki hot pot" is acceptable if the specific dish matters; afterward use "hot pot" when the scene is just referring to the meal. |
+| 土鍋 | clay pot | Cooking vessel for hot pot. |
+| 白菜 | cabbage / napa cabbage | Prefer plain "cabbage" in casual narration unless the specific ingredient distinction matters. "Napa cabbage" is accurate but can sound grocery-label formal. |
+| 水菜 | mizuna greens / greens | Prefer "greens" in casual meal narration; use "mizuna greens" only if the specific vegetable matters. Avoid unexplained bare "mizuna". |
+| ラムネ | ramune candy / ramune soda | Disambiguate by context: in snack lists with chips/chocolate/pudding, use "ramune candy"; when drinking from a bottle, use "ramune soda". Never confuse with ramen. |

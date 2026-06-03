@@ -31,12 +31,15 @@ $rules
 
 $glossary
 
-# REFERENCE PRECEDENTS (canonical phrasings — imitate these)
+# REFERENCE PRECEDENTS (retrieved evidence — use with judgment)
 
 The translator's past renderings of structurally similar JP source.
-Lean on these especially when revising flagged spans: if a precedent
-covers the same JP shape, use the canonical EN phrasing rather than
-inventing a new one.
+Lean on these especially when revising flagged spans, but only as
+evidence. Rules, glossary choices, natural English sentence structure,
+and the human reference window override any retrieved precedent that
+sounds awkward, conflicts with a rule, or does not fit the local
+context. Do not preserve Japanese clause order just because a precedent
+does; preserve meaning and emotional sequence in natural English.
 
 $reference_precedents
 
