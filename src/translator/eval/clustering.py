@@ -21,12 +21,11 @@ from string import Template
 from typing import Any
 
 from translator.config import MODELS, PATHS, REASONING, VAULT
+from translator.eval.prompts import load_template
 from translator.inference.provider import complete
 from translator.vault import load_active_rules, load_pruned_rules, write_rule
 from translator.vault.notes import list_notes, read_note
 from translator.vault.rules import Rule, load_rules_by_state
-from translator.vault.templates import CLUSTERING_TEMPLATE
-
 
 # Deviation IDs are formed by ``vault.deviations.DeviationNote.deviation_id``
 # as ``part-{chapter:03d}-r{round:02d}-d{idx:02d}`` — extract the chapter
@@ -185,11 +184,7 @@ def cluster_into_candidate_rules(
     ``created_round`` in each new rule's frontmatter.
     """
     model = model or MODELS.clustering
-    vault_template = PATHS.knowledge_vault / VAULT.clustering_template
-    template_text = (
-        vault_template.read_text(encoding="utf-8") if vault_template.exists() else CLUSTERING_TEMPLATE
-    )
-    template = Template(template_text)
+    template = Template(load_template("clustering.md", vault_rel=VAULT.clustering_template))
 
     prompt = template.safe_substitute(
         active_rules=_format_rules_for_prompt(load_active_rules()),

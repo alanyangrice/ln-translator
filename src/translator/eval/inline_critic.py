@@ -29,6 +29,7 @@ from string import Template
 from typing import Any, Literal
 
 from translator.config import MODELS, PATHS, REASONING, VAULT
+from translator.eval.prompts import load_template
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.provider import complete
@@ -42,7 +43,6 @@ from translator.prep.pov import POVLookup, load_pov_lookup
 from translator.style import format_style_profile_for_prompt
 from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.deviations import DeviationCategory, Severity
-from translator.vault.templates import CRITIQUE_TEMPLATE
 
 
 @dataclass
@@ -176,10 +176,7 @@ CRITIQUE_JSON_SCHEMA: dict = {
 
 
 def _load_critique_template() -> str:
-    vault_path = PATHS.knowledge_vault / VAULT.critique_template
-    if vault_path.exists():
-        return vault_path.read_text(encoding="utf-8")
-    return CRITIQUE_TEMPLATE
+    return load_template("critique.md", vault_rel=VAULT.critique_template)
 
 
 def _parse_flags(raw: str) -> list[CritiqueFlag]:

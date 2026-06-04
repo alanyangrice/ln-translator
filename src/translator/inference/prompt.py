@@ -20,8 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from string import Template
 
-from translator.config import PATHS, VAULT
+from translator.config import VAULT
 from translator.glossary import format_for_prompt, load_glossary
+from translator.inference.prompts import load_template_with_source
 from translator.inference.window import Window
 from translator.precedents import (
     RetrievalResult,
@@ -32,7 +33,6 @@ from translator.precedents import (
 from translator.prep.corpus import Part, load_part
 from translator.style import format_style_profile_for_prompt, load_style_profile
 from translator.vault import format_rules_for_prompt, load_active_rules
-from translator.vault.templates import PROMPT_TEMPLATE
 
 
 @dataclass
@@ -54,13 +54,9 @@ def _load_template() -> tuple[str, str]:
     """Return ``(template_string, source_label)``.
 
     Prefers ``knowledge-vault/config/prompt-template.md`` so user edits
-    in Obsidian take effect; falls back to the in-code constant
-    otherwise.
+    in Obsidian take effect; falls back to the packaged default otherwise.
     """
-    vault_template = PATHS.knowledge_vault / VAULT.prompt_template
-    if vault_template.exists():
-        return vault_template.read_text(encoding="utf-8"), "vault"
-    return PROMPT_TEMPLATE, "in-code"
+    return load_template_with_source("translate.md", vault_rel=VAULT.prompt_template)
 
 
 def _format_window(window: Window) -> str:

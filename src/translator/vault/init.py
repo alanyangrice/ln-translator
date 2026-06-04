@@ -13,17 +13,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from translator.config import PATHS, VAULT
+from translator.templates import load_template
 from translator.vault.notes import list_notes
-from translator.vault.templates import (
-    CLUSTERING_TEMPLATE,
-    COMPARISON_TEMPLATE,
-    CRITIQUE_TEMPLATE,
-    GLOSSARY_SCAFFOLD,
-    PROMPT_TEMPLATE,
-    REVISE_TEMPLATE,
-    STYLE_README,
-    VAULT_README,
-)
+
+# Packaged default templates live as Markdown next to the code that uses
+# them. Resolve their dirs by path (rather than importing the heavy
+# ``inference`` / ``eval`` packages, which would create an import cycle back
+# through ``vault``). ``__file__`` is ``translator/vault/init.py``.
+_TRANSLATOR_ROOT = Path(__file__).resolve().parent.parent
+_INFERENCE_TEMPLATES = _TRANSLATOR_ROOT / "inference" / "templates"
+_EVAL_TEMPLATES = _TRANSLATOR_ROOT / "eval" / "templates"
+# Non-prompt vault scaffolds (glossary starter, READMEs) seeded on init.
+_VAULT_TEMPLATES = Path(__file__).resolve().parent / "templates"
 
 
 @dataclass
@@ -56,9 +57,8 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
 
     Returns the resolved vault root path. Safe to call multiple times:
     only missing files are written. Pass ``overwrite_templates=True`` to
-    forcibly rewrite the prompt and comparison templates from
-    :mod:`translator.vault.templates` (used after the canonical templates
-    are bumped).
+    forcibly rewrite the prompt and comparison templates from the packaged
+    Markdown defaults (used after the canonical templates are bumped).
     """
     root = root or PATHS.knowledge_vault
     root.mkdir(parents=True, exist_ok=True)
@@ -77,14 +77,14 @@ def init_vault(root: Path | None = None, *, overwrite_templates: bool = False) -
         (root / sub).mkdir(parents=True, exist_ok=True)
 
     seeds = [
-        (root / VAULT.prompt_template, PROMPT_TEMPLATE),
-        (root / VAULT.comparison_template, COMPARISON_TEMPLATE),
-        (root / VAULT.clustering_template, CLUSTERING_TEMPLATE),
-        (root / VAULT.critique_template, CRITIQUE_TEMPLATE),
-        (root / VAULT.revise_template, REVISE_TEMPLATE),
-        (root / VAULT.glossary_file, GLOSSARY_SCAFFOLD),
-        (root / VAULT.style_readme, STYLE_README),
-        (root / "README.md", VAULT_README),
+        (root / VAULT.prompt_template, load_template("translate.md", _INFERENCE_TEMPLATES)),
+        (root / VAULT.comparison_template, load_template("comparison.md", _EVAL_TEMPLATES)),
+        (root / VAULT.clustering_template, load_template("clustering.md", _EVAL_TEMPLATES)),
+        (root / VAULT.critique_template, load_template("critique.md", _EVAL_TEMPLATES)),
+        (root / VAULT.revise_template, load_template("revise.md", _INFERENCE_TEMPLATES)),
+        (root / VAULT.glossary_file, load_template("glossary.md", _VAULT_TEMPLATES)),
+        (root / VAULT.style_readme, load_template("style-readme.md", _VAULT_TEMPLATES)),
+        (root / "README.md", load_template("vault-readme.md", _VAULT_TEMPLATES)),
     ]
     for path, contents in seeds:
         if path.exists() and not overwrite_templates and path.name != "README.md":

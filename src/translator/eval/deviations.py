@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 from string import Template
 
-from translator.config import MODELS, PATHS, REASONING, VAULT
+from translator.config import MODELS, REASONING, VAULT
+from translator.eval.prompts import load_template
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.provider import complete
@@ -20,14 +21,10 @@ from translator.prep.pov import POVLookup, load_pov_lookup
 from translator.style import format_style_profile_for_prompt
 from translator.vault import format_rules_for_prompt, load_active_rules
 from translator.vault.deviations import Deviation, DeviationNote, write_deviation_note
-from translator.vault.templates import COMPARISON_TEMPLATE
 
 
 def _load_comparison_template() -> str:
-    vault_path = PATHS.knowledge_vault / VAULT.comparison_template
-    if vault_path.exists():
-        return vault_path.read_text(encoding="utf-8")
-    return COMPARISON_TEMPLATE
+    return load_template("comparison.md", vault_rel=VAULT.comparison_template)
 
 
 DEVIATIONS_JSON_SCHEMA: dict = {

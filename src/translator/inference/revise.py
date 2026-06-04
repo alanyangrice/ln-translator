@@ -26,7 +26,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from string import Template
 
-from translator.config import MODELS, PATHS, THRESHOLDS, VAULT
+from translator.config import MODELS, THRESHOLDS, VAULT
 from translator.eval.inline_critic import (
     CritiqueResult,
     format_flags_for_revision,
@@ -34,6 +34,7 @@ from translator.eval.inline_critic import (
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.prompt import _format_window
+from translator.inference.prompts import load_template_with_source
 from translator.inference.provider import (
     DeepSeekReasoningEffort,
     complete,
@@ -49,7 +50,6 @@ from translator.precedents import (
 from translator.prep.corpus import Part, load_part
 from translator.style import format_style_profile_for_prompt, load_style_profile
 from translator.vault import format_rules_for_prompt, load_active_rules
-from translator.vault.templates import REVISE_TEMPLATE
 
 
 @dataclass
@@ -66,10 +66,7 @@ class RevisedPrompt:
 
 
 def _load_revise_template() -> tuple[str, str]:
-    vault_template = PATHS.knowledge_vault / VAULT.revise_template
-    if vault_template.exists():
-        return vault_template.read_text(encoding="utf-8"), "vault"
-    return REVISE_TEMPLATE, "in-code"
+    return load_template_with_source("revise.md", vault_rel=VAULT.revise_template)
 
 
 def assemble_revise_prompt(

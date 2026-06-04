@@ -5,8 +5,7 @@ choices ("マフラー" -> "scarf", not "muffler"; "宮城" -> "Miyagi" with
 no honorific in Sendai POV; etc.). The source of truth is the Markdown
 table at ``knowledge-vault/glossary/glossary.md`` so the user can edit
 it in Obsidian. A fresh vault is seeded with a starter table by
-``translator vault init`` (see ``GLOSSARY_SCAFFOLD`` in
-:mod:`translator.vault.templates`).
+``translator vault init`` from ``vault/templates/glossary.md``.
 
 The loader returns a list of :class:`GlossaryEntry` and a helper for
 formatting them into the prompt.
