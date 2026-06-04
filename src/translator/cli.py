@@ -50,6 +50,16 @@ ai_ref_app = typer.Typer(
         "window past the human-translated range."
     ),
 )
+bench_app = typer.Typer(
+    no_args_is_help=True,
+    help=(
+        "Critique-driven regression bench: turn past user critiques into a "
+        "regression suite and check whether known issues reappear after "
+        "vault changes."
+    ),
+)
+bench_issues_app = typer.Typer(no_args_is_help=True, help="Inspect / edit the issue ledger.")
+bench_app.add_typer(bench_issues_app, name="issues")
 
 app.add_typer(scrape_app, name="scrape")
 app.add_typer(prep_app, name="prep")
@@ -59,6 +69,7 @@ app.add_typer(style_app, name="style")
 app.add_typer(evaluate_app, name="evaluate")
 app.add_typer(precedents_app, name="precedents")
 app.add_typer(ai_ref_app, name="ai-ref")
+app.add_typer(bench_app, name="bench")
 
 console = Console()
 
@@ -778,6 +789,22 @@ def translate(
             "Cache is scoped by model so swapping doesn't reuse stale scans."
         ),
     ),
+    deepseek_thinking: bool = typer.Option(
+        False,
+        "--deepseek-thinking/--no-deepseek-thinking",
+        help=(
+            "Enable DeepSeek V4 thinking mode for translation calls. "
+            "Ignored for non-DeepSeek models."
+        ),
+    ),
+    deepseek_reasoning_effort: str = typer.Option(
+        "high",
+        "--deepseek-reasoning-effort",
+        help=(
+            "DeepSeek thinking effort when --deepseek-thinking is enabled: "
+            "'high' or 'max'."
+        ),
+    ),
 ) -> None:
     """Translate one part end-to-end with the inline critic + revise loop.
 
@@ -803,6 +830,11 @@ def translate(
 
     part_id = _normalize_part(part)
     holdout_arg: object = ... if not no_holdout_skip else None
+    if deepseek_reasoning_effort not in {"high", "max"}:
+        console.print(
+            "[red]--deepseek-reasoning-effort must be 'high' or 'max'[/red]"
+        )
+        raise typer.Exit(2)
 
     ai_references: list[tuple[str, Path]] = []
     for spec in ai_reference or ():
@@ -838,6 +870,8 @@ def translate(
             auto_ai_references=auto_ai_references,
             ai_reference_limit=ai_reference_limit,
             risk_model=risk_model,
+            deepseek_thinking=deepseek_thinking,
+            deepseek_reasoning_effort=deepseek_reasoning_effort,  # type: ignore[arg-type]
         )
     except UnsupportedTargetError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1601,6 +1635,304 @@ def ai_ref_remove(
         console.print(f"[green]removed {part_id} from manifest[/green]")
     else:
         console.print(f"[yellow]{part_id} not found in manifest[/yellow]")
+
+
+# ---------------------------------------------------------------------------
+# bench (critique-driven regression suite)
+# ---------------------------------------------------------------------------
+
+@bench_app.command("seed")
+def bench_seed(
+    transcripts_dir: str | None = typer.Option(
+        None,
+        "--transcripts-dir",
+        help="Cursor agent-transcripts dir (default: auto-detected for this repo).",
+    ),
+    distill: bool = typer.Option(
+        False,
+        "--distill/--no-distill",
+        help=(
+            "Use an LLM to compress each critique + the assistant's follow-up "
+            "into crisp resolution_guidance + category/severity. Costs API "
+            "calls; off by default (raw assistant follow-up is kept either way)."
+        ),
+    ),
+    model: str | None = typer.Option(None, "--model", help="Override the distillation model."),
+    append: bool = typer.Option(
+        False, "--append", help="Append to an existing ledger instead of overwriting."
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Allow overwriting a non-empty existing ledger."
+    ),
+) -> None:
+    """Auto-seed the issue ledger from past chat critiques (parts 230-236).
+
+    Mines anchored ``@file:line`` comments, resolves each to its EN excerpt
+    on disk, and captures the assistant's follow-up as resolution_guidance.
+    Review/trim the generated ``data/regression/issues.jsonl`` afterwards.
+    """
+    from pathlib import Path as _Path
+
+    from translator.bench import build_seed_issues, load_issues, save_issues
+    from translator.bench.ledger import issues_dir
+
+    tdir = _Path(transcripts_dir) if transcripts_dir else None
+    if distill:
+        console.print("[dim]distilling with an LLM — this makes one call per issue…[/dim]")
+    drafts = build_seed_issues(
+        tdir, distill=distill, model=model, progress=lambda m: console.print(f"[dim]{m}[/dim]")
+    )
+    if not drafts:
+        console.print(
+            "[yellow]No anchored critiques found. Check --transcripts-dir, or add "
+            "issues manually with `translator bench issues add`.[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    d = issues_dir()
+    if append:
+        existing = load_issues()
+        existing_ids = {i.id for i in existing}
+        # Re-key drafts to avoid id collisions with the existing ledger.
+        from translator.bench.ledger import next_issue_id
+
+        merged = list(existing)
+        for draft in drafts:
+            if draft.id in existing_ids:
+                draft.id = next_issue_id(draft.part_id, [m for m in merged if m.part_id == draft.part_id])
+            merged.append(draft)
+            existing_ids.add(draft.id)
+        save_issues(merged)
+        console.print(f"[green]Appended {len(drafts)} issue(s)[/green] → {d}/")
+    else:
+        if load_issues() and not overwrite:
+            console.print(
+                f"[red]{d}/ already has issues. Use --append or --overwrite.[/red]"
+            )
+            raise typer.Exit(2)
+        save_issues(drafts)
+        console.print(f"[green]Wrote {len(drafts)} draft issue(s)[/green] → {d}/ (one file per chapter)")
+
+    _print_issue_table(drafts)
+    console.print(
+        "[dim]Review/trim the ledger, then run `translator bench check --label <name> "
+        "--suffix <existing-output-suffix>`.[/dim]"
+    )
+
+
+@bench_issues_app.command("list")
+def bench_issues_list(
+    part: str | None = typer.Option(None, "--part", help="Filter to one part id/number."),
+    show_disabled: bool = typer.Option(False, "--show-disabled", help="Include disabled issues."),
+) -> None:
+    """List the issue ledger."""
+    from translator.bench import load_issues
+
+    issues = load_issues(include_disabled=show_disabled)
+    if part:
+        pid = _normalize_part(part)
+        issues = [i for i in issues if i.part_id == pid]
+    if not issues:
+        console.print("[yellow]No issues in the ledger.[/yellow]")
+        return
+    _print_issue_table(issues)
+    console.print(f"[dim]{len(issues)} issue(s).[/dim]")
+
+
+@bench_issues_app.command("add")
+def bench_issues_add(
+    part: str = typer.Option(..., "--part", help="Part id or number."),
+    comment: str = typer.Option(..., "--comment", help="The issue / what was wrong."),
+    category: str = typer.Option("translationese", "--category", help="Category key."),
+    severity: str = typer.Option("minor", "--severity", help="major | minor."),
+    excerpt: str = typer.Option("", "--excerpt", help="Offending phrasing (earlier version)."),
+    jp_anchor: str = typer.Option("", "--jp-anchor", help="JP source span this maps to."),
+    preferred_fix: str = typer.Option("", "--preferred-fix", help="Preferred phrasing, if any."),
+    guidance: str = typer.Option("", "--guidance", help="What 'resolved' means."),
+) -> None:
+    """Add a single issue to the ledger (no code change needed)."""
+    from translator.bench import Issue, append_issue
+    from translator.bench.categories import is_valid_category
+
+    if not is_valid_category(category):
+        from translator.bench.categories import describe_categories
+
+        console.print(f"[red]Unknown category {category!r}. Valid categories:[/red]")
+        console.print(describe_categories())
+        raise typer.Exit(2)
+    issue = Issue(
+        id="",
+        part_id=_normalize_part(part),
+        category=category,
+        severity=severity,  # type: ignore[arg-type]
+        user_comment=comment,
+        en_excerpt_original=excerpt,
+        jp_anchor=jp_anchor,
+        preferred_fix=preferred_fix or None,
+        resolution_guidance=guidance or None,
+        source="manual",
+    )
+    problems = issue.validate()
+    # id is allocated on append, so ignore the "missing id" pre-check.
+    problems = [p for p in problems if p != "missing id"]
+    if problems:
+        console.print(f"[red]Invalid issue: {', '.join(problems)}[/red]")
+        raise typer.Exit(2)
+    path = append_issue(issue)
+    console.print(f"[green]Added {issue.id}[/green] → {path}")
+
+
+@bench_app.command("run")
+def bench_run(
+    label: str = typer.Option(..., "--label", help="Bench label (e.g. a rule version like v18)."),
+    parts: str | None = typer.Option(
+        None, "--parts", help="Comma-separated part ids (default: every ledger chapter)."
+    ),
+    model: str | None = typer.Option(None, "--model", help="Override MODELS.translation."),
+    force: bool = typer.Option(False, "--force", help="Re-translate even if output exists."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Assemble prompts only; no API."),
+    deepseek_thinking: bool = typer.Option(
+        False, "--deepseek-thinking/--no-deepseek-thinking", help="DeepSeek thinking mode."
+    ),
+) -> None:
+    """Re-translate the ledger's chapters under ``bench-{label}``."""
+    from translator.bench import run_bench
+    from translator.bench.ledger import ledger_part_ids
+
+    part_ids = (
+        [_normalize_part(p) for p in parts.split(",") if p.strip()] if parts else None
+    )
+    if part_ids is None and not ledger_part_ids():
+        console.print("[red]Ledger is empty; run `translator bench seed` first.[/red]")
+        raise typer.Exit(1)
+
+    items = run_bench(
+        label,
+        part_ids=part_ids,
+        model=model,
+        force=force,
+        dry_run=dry_run,
+        deepseek_thinking=deepseek_thinking,
+        progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+    )
+    table = Table(title=f"bench run: {label}")
+    table.add_column("part")
+    table.add_column("status")
+    table.add_column("detail")
+    for it in items:
+        color = {"translated": "green", "skipped": "yellow", "error": "red"}.get(it.status, "white")
+        table.add_row(it.part_id, f"[{color}]{it.status}[/{color}]", it.detail)
+    console.print(table)
+
+
+@bench_app.command("check")
+def bench_check(
+    label: str = typer.Option(..., "--label", help="Label to record verdicts under."),
+    suffix: str | None = typer.Option(
+        None,
+        "--suffix",
+        help=(
+            "Output directory suffix to inspect (default: bench-{label}). Point "
+            "at any existing run, e.g. --suffix v2-rag-deepseek-rules-v11."
+        ),
+    ),
+    checker: str = typer.Option("issue_presence", "--checker", help="Checker strategy."),
+    model: str | None = typer.Option(None, "--model", help="Override the checker model."),
+    parts: str | None = typer.Option(None, "--parts", help="Restrict to comma-separated parts."),
+) -> None:
+    """Check whether each known issue is PRESENT / RESOLVED / UNCLEAR."""
+    from translator.bench import check_label
+    from translator.bench.checkers import available_checkers
+
+    if checker not in available_checkers():
+        console.print(
+            f"[red]Unknown checker {checker!r}; available: {', '.join(available_checkers())}[/red]"
+        )
+        raise typer.Exit(2)
+    part_ids = (
+        [_normalize_part(p) for p in parts.split(",") if p.strip()] if parts else None
+    )
+    run = check_label(
+        label,
+        suffix=suffix,
+        checker_name=checker,
+        model=model,
+        part_ids=part_ids,
+        progress=lambda m: console.print(f"[dim]{m}[/dim]"),
+    )
+    counts: dict[str, int] = {}
+    for v in run.results.values():
+        counts[v.verdict] = counts.get(v.verdict, 0) + 1
+    table = Table(title=f"bench check: {label} (suffix={run.output_suffix})")
+    table.add_column("verdict")
+    table.add_column("count", justify="right")
+    for verdict in ("RESOLVED", "PRESENT", "UNCLEAR"):
+        table.add_row(verdict, str(counts.get(verdict, 0)))
+    console.print(table)
+    console.print(
+        f"[dim]Wrote runs/{label}.json. Build a report with "
+        f"`translator bench report --label {label} [--baseline <other>]`.[/dim]"
+    )
+
+
+@bench_app.command("report")
+def bench_report(
+    label: str = typer.Option(..., "--label", help="Label to report on."),
+    baseline: str | None = typer.Option(
+        None, "--baseline", help="Prior label to diff against (enables regression detection)."
+    ),
+) -> None:
+    """Build a scorecard + regression report for a label."""
+    from translator.bench import build_report, render_markdown, write_report
+
+    try:
+        report = build_report(label, baseline=baseline)
+    except FileNotFoundError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    md_path, json_path = write_report(report)
+    console.print(render_markdown(report))
+    console.print(
+        f"\n[green]Wrote[/green] {md_path.relative_to(PATHS.repo_root)} and "
+        f"{json_path.relative_to(PATHS.repo_root)}"
+    )
+
+
+@bench_app.command("history")
+def bench_history() -> None:
+    """Show a verdict matrix for every issue across all bench runs."""
+    from translator.bench import build_history, load_issues
+
+    labels, matrix = build_history()
+    if not labels:
+        console.print("[yellow]No bench runs yet.[/yellow]")
+        return
+    issues = {i.id: i for i in load_issues(include_disabled=True)}
+    table = Table(title="Issue verdict history")
+    table.add_column("issue")
+    table.add_column("part")
+    for label in labels:
+        table.add_column(label)
+    glyph = {"RESOLVED": "OK", "PRESENT": "!!", "UNCLEAR": "??"}
+    for issue_id in sorted(matrix):
+        part = issues[issue_id].part_id if issue_id in issues else "?"
+        cells = [glyph.get(matrix[issue_id].get(label, ""), "-") for label in labels]
+        table.add_row(issue_id, part, *cells)
+    console.print(table)
+
+
+def _print_issue_table(issues: list) -> None:
+    table = Table(title="Issue ledger")
+    table.add_column("id")
+    table.add_column("part")
+    table.add_column("cat")
+    table.add_column("sev")
+    table.add_column("comment")
+    for i in issues:
+        comment = i.user_comment if len(i.user_comment) <= 70 else i.user_comment[:67] + "…"
+        table.add_row(i.id, i.part_id, i.category, i.severity, comment)
+    console.print(table)
 
 
 # ---------------------------------------------------------------------------

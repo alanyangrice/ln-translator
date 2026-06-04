@@ -36,7 +36,11 @@ from translator.inference.ai_references import (
     find_recent_for_target,
 )
 from translator.inference.prompt import AssembledPrompt, assemble_prompt
-from translator.inference.provider import complete, detect_provider
+from translator.inference.provider import (
+    DeepSeekReasoningEffort,
+    complete,
+    detect_provider,
+)
 from translator.inference.revise import revise_translation
 from translator.inference.window import Window, build_ai_reference, build_window
 from translator.precedents import (
@@ -104,6 +108,8 @@ def translate_part(
     auto_ai_references: bool = True,
     ai_reference_limit: int | None = None,
     risk_model: str | None = None,
+    deepseek_thinking: bool = False,
+    deepseek_reasoning_effort: DeepSeekReasoningEffort = "high",
 ) -> TranslationResult:
     """Translate ``part_id`` end-to-end with optional critic + revision loop.
 
@@ -174,6 +180,10 @@ def translate_part(
         (:data:`translator.precedents.risk.DEFAULT_RISK_MODEL`,
         currently ``deepseek-v4-pro``). Cache is scoped by model so
         switching scanners doesn't reuse stale results.
+    deepseek_thinking / deepseek_reasoning_effort
+        DeepSeek V4 thinking controls for translation calls. By default
+        the pipeline keeps DeepSeek in non-thinking mode; enable this for
+        slower, deeper ``high`` or ``max`` reasoning passes.
     """
     lookup = lookup or load_pov_lookup()
     entry = lookup.get(part_id)
@@ -292,6 +302,13 @@ def translate_part(
     if not dry_run:
         provider = detect_provider(model)
         notes.append(f"calling {provider} with model={model}")
+        if provider == "deepseek":
+            mode = (
+                f"thinking={deepseek_reasoning_effort}"
+                if deepseek_thinking
+                else "thinking=disabled"
+            )
+            notes.append(f"deepseek: {mode}")
         if fetch_precedents and precedents is not None:
             phrase_count = len(precedents.phrases)
             para_count = len(precedents.paragraphs)
@@ -313,10 +330,22 @@ def translate_part(
         # Claude Opus 4.7's 32K output cap. Tune via
         # ``THRESHOLDS.translation_max_tokens`` if a future chapter
         # demands more.
+        max_tokens = THRESHOLDS.translation_max_tokens
+        if (
+            provider == "deepseek"
+            and deepseek_thinking
+            and deepseek_reasoning_effort == "max"
+        ):
+            # DeepSeek returns a long reasoning trace before the final
+            # content. Think Max needs substantially more output headroom
+            # than a non-thinking literary translation.
+            max_tokens = max(max_tokens, 65536)
         translation = complete(
             model=model,
             prompt=prompt.text,
-            max_tokens=THRESHOLDS.translation_max_tokens,
+            max_tokens=max_tokens,
+            deepseek_thinking=deepseek_thinking,
+            deepseek_reasoning_effort=deepseek_reasoning_effort,
         )
         draft_v1 = translation
 
@@ -342,6 +371,8 @@ def translate_part(
                 lookup=lookup,
                 use_precedents=use_precedents,
                 precedents=precedents,
+                deepseek_thinking=deepseek_thinking,
+                deepseek_reasoning_effort=deepseek_reasoning_effort,
             )
             notes.extend(revision_notes)
 
@@ -388,6 +419,8 @@ def _run_critique_revise_loop(
     lookup: POVLookup,
     use_precedents: bool = True,
     precedents: RetrievalResult | None = None,
+    deepseek_thinking: bool = False,
+    deepseek_reasoning_effort: DeepSeekReasoningEffort = "high",
 ) -> tuple[str, list[CritiqueResult], int, list[str]]:
     """Run critic-then-revise iterations until clean or capped.
 
@@ -435,6 +468,8 @@ def _run_critique_revise_loop(
             model=model,
             use_precedents=use_precedents,
             precedents=precedents,
+            deepseek_thinking=deepseek_thinking,
+            deepseek_reasoning_effort=deepseek_reasoning_effort,
         )
         revision_count += 1
         current_draft = revised

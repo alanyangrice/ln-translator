@@ -2,10 +2,10 @@
   "version": 1,
   "entries": {
     "part_230": {
-      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_230-v2-rag-deepseek/translation.en.txt",
+      "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_230-v2-rag-deepseek-rules-v17/translation.en.txt",
       "model": "deepseek-v4-pro",
-      "source_suffix": "v2-rag-deepseek",
-      "promoted_at": "2026-05-28T12:31:35+00:00"
+      "source_suffix": "v2-rag-deepseek-rules-v17",
+      "promoted_at": "2026-06-03T05:30:15+00:00"
     },
     "part_231": {
       "en_text": "/Users/alanyang/Desktop/ln-translator/data/output/part_231-v2-rag-deepseek-with-ai-230/translation.en.txt",

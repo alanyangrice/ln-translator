@@ -34,6 +34,7 @@ precedent that sounds awkward, conflicts with a rule, or comes from an
 AI-translated reference. Sentence-level entries capture phrase-level
 patterns (idioms, verb-object pairings, noun-phrase choices);
 paragraph-window entries capture beat structure and dialogue rhythm.
+If a retrieved precedent conflicts with a rule, follow the rule.
 
 $reference_precedents
 

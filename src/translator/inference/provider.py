@@ -36,6 +36,7 @@ from translator.config import (
 
 Provider = Literal["openai", "anthropic", "deepseek"]
 ReasoningEffort = Literal["none", "low", "medium", "high", "xhigh"]
+DeepSeekReasoningEffort = Literal["high", "max"]
 
 # Anthropic model ids (substrings) that reject non-default sampling params.
 # Confirmed from the Anthropic May 2026 docs: Opus 4.7 returns HTTP 400 if
@@ -70,11 +71,12 @@ def complete(
     json_schema: dict | None = None,
     provider: Provider | None = None,
     deepseek_thinking: bool = False,
+    deepseek_reasoning_effort: DeepSeekReasoningEffort = "high",
 ) -> str:
     """Send a single completion request and return the text content.
 
     ``reasoning_effort`` is passed through for OpenAI Responses-API calls
-    and ignored for Anthropic / DeepSeek. ``temperature`` is honored for
+    and ignored for Anthropic. ``temperature`` is honored for
     Anthropic when the model accepts it and for DeepSeek; OpenAI reasoning
     models ignore it on the server side.
 
@@ -94,6 +96,8 @@ def complete(
     reasoning tasks but ~5-10x slower and noisier for structured
     extraction. Pass ``False`` (the default) to force non-thinking mode
     via ``extra_body={"thinking": {"type": "disabled"}}``.
+    When enabled, ``deepseek_reasoning_effort`` selects ``high`` or
+    ``max`` thinking depth.
     """
     provider = provider or detect_provider(model)
     if provider == "anthropic":
@@ -107,6 +111,7 @@ def complete(
             max_tokens,
             json_schema,
             thinking=deepseek_thinking,
+            reasoning_effort=deepseek_reasoning_effort,
         )
     return _complete_openai(model, prompt, system, max_tokens, reasoning_effort, json_schema)
 
@@ -259,6 +264,7 @@ def _complete_deepseek(
     json_schema: dict | None,
     *,
     thinking: bool = False,
+    reasoning_effort: DeepSeekReasoningEffort = "high",
 ) -> str:
     from openai import APIConnectionError, APIStatusError, APITimeoutError, OpenAI
 
@@ -287,7 +293,10 @@ def _complete_deepseek(
     # disable it: thinking mode is ~5-10x slower and the chain-of-thought
     # would just be wasted output tokens. Passed via ``extra_body`` since
     # the OpenAI SDK doesn't have a native field for it.
-    if not thinking:
+    if thinking:
+        kwargs["reasoning_effort"] = reasoning_effort
+        kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+    else:
         kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
     last_exc: Exception | None = None
@@ -320,4 +329,10 @@ def _complete_deepseek(
     raise last_exc
 
 
-__all__ = ["Provider", "ReasoningEffort", "complete", "detect_provider"]
+__all__ = [
+    "DeepSeekReasoningEffort",
+    "Provider",
+    "ReasoningEffort",
+    "complete",
+    "detect_provider",
+]

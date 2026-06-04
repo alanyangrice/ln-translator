@@ -34,7 +34,11 @@ from translator.eval.inline_critic import (
 from translator.glossary import format_for_prompt as format_glossary_for_prompt
 from translator.glossary import load_glossary
 from translator.inference.prompt import _format_window
-from translator.inference.provider import complete, detect_provider
+from translator.inference.provider import (
+    DeepSeekReasoningEffort,
+    complete,
+    detect_provider,
+)
 from translator.inference.window import Window
 from translator.precedents import (
     RetrievalResult,
@@ -134,6 +138,8 @@ def revise_translation(
     target_part: Part | None = None,
     use_precedents: bool = True,
     precedents: RetrievalResult | None = None,
+    deepseek_thinking: bool = False,
+    deepseek_reasoning_effort: DeepSeekReasoningEffort = "high",
 ) -> tuple[str, RevisedPrompt]:
     """Run the revision pass and return ``(revised_text, prompt_metadata)``.
 
@@ -152,10 +158,19 @@ def revise_translation(
     )
     chosen_model = model or MODELS.translation
     _provider = detect_provider(chosen_model)  # asserted by caller; logged via notes
+    max_tokens = THRESHOLDS.translation_max_tokens
+    if (
+        _provider == "deepseek"
+        and deepseek_thinking
+        and deepseek_reasoning_effort == "max"
+    ):
+        max_tokens = max(max_tokens, 65536)
     revised = complete(
         model=chosen_model,
         prompt=prompt.text,
-        max_tokens=THRESHOLDS.translation_max_tokens,
+        max_tokens=max_tokens,
+        deepseek_thinking=deepseek_thinking,
+        deepseek_reasoning_effort=deepseek_reasoning_effort,
     )
     return revised, prompt
 

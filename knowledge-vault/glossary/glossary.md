@@ -9,6 +9,10 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | 共用スペース | living room | Shared apartment space |
 | 仙台さん | Sendai-san | Always with honorific (Miyagi POV) |
 | 宮城 | Miyagi | No honorific (Sendai POV) |
+| 羽美奈 | Umina | Sendai's friend. Always romanize as Umina, never Hamina/Hamana. |
+| 亜美 | Ami | Miyagi's friend. |
+| 舞香 | Maika | Miyagi's friend. |
+| 麻理子 | Mariko | Umina's friend / Sendai-side school acquaintance. |
 | ピアス | earrings | — |
 | 「」 | 「」 | Preserve Japanese dialogue brackets |
 | チェスト | drawers | Refers to a chest of drawers / dresser, never bare "chest" (which reads as the body part) |
@@ -47,3 +51,4 @@ the parallel corpus and refined as evaluation surfaces inconsistencies.
 | 白菜 | cabbage / napa cabbage | Prefer plain "cabbage" in casual narration unless the specific ingredient distinction matters. "Napa cabbage" is accurate but can sound grocery-label formal. |
 | 水菜 | mizuna greens / greens | Prefer "greens" in casual meal narration; use "mizuna greens" only if the specific vegetable matters. Avoid unexplained bare "mizuna". |
 | ラムネ | ramune candy / ramune soda | Disambiguate by context: in snack lists with chips/chocolate/pudding, use "ramune candy"; when drinking from a bottle, use "ramune soda". Never confuse with ramen. |
+| 布団 | blanket / covers / comforter | Use the natural bedding word for the scene. Prefer "covers" when someone is hiding under it, "blanket" for general handling, and "comforter" when that matches the established room/bedding context. Avoid "futon" unless the Japanese bedding itself is being culturally foregrounded. |
